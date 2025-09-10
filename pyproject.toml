@@ -13,3 +13,10 @@ dependencies = [
     "streamlit>=1.48.0",
     
 ]
+[tool.poetry]
+name = "hciip"
+version = "0.1.0"
+description = ""
+authors = ["Behrooz Bashokooh <behrooz.bashokooh@gmail.com>"]
+package-mode = false
+license = "MIT"
