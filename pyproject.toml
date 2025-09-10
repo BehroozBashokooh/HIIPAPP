@@ -17,6 +17,6 @@ dependencies = [
 name = "hciip"
 version = "0.1.0"
 description = ""
-authors = ["Behrooz Bashokooh <behrooz.bashokooh@gmail.com>"]
+authors = ["Behrooz Bashokooh <behi@me.com>"]
 package-mode = false
 license = "MIT"
