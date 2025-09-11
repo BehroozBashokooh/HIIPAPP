@@ -14,8 +14,8 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.1"
-st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="wide")
+APP_VER = "v1.1.1"
+st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # =============================================================
 # Units and conversions
@@ -398,7 +398,7 @@ with st.sidebar:
     n = st.number_input("Iterations", min_value=1000, max_value=1_000_000, value=10_000, step=1000, key="n_iter")
     st.caption(f"We will run **{int(n):,}** iterations when you click Run.")
     seed = st.number_input("Random seed", min_value=0, value=42, step=1, key="seed")
-    enable_deps = st.checkbox("Enable dependencies (correlation)", value=True, key="enable_deps")
+    #enable_deps = st.checkbox("Enable dependencies (correlation)", value=True, key="enable_deps")
 
     st.header("Units")
     u_area = st.selectbox("Area units", list(AREA_UNITS.keys()), index=1, key="u_area")
@@ -411,6 +411,7 @@ with st.sidebar:
     else:
         out_unit = st.selectbox("In-place & recoverable unit", list(GAS_UNITS.keys()), index=4, key="out_unit")  # default MMscf
     decimals = st.number_input("Round results to # decimals", min_value=0, max_value=6, value=2, step=1, key="decimals")
+    heatmap_decimals = st.number_input("Heatmap label decimals", min_value=0, max_value=6, value=1, step=1, key="heatmap_decimals")
 
     # Conditional unit pickers for Solution Gas / Condensate
     if fluid == "Oil" and st.session_state.get("include_rs", False):
@@ -826,8 +827,21 @@ with sim_tab:
         np.fill_diagonal(C, 1.0)
         C_pd = nearest_pd(C)
         #st.caption(f"Condition number of correlation matrix (used internally): {np.linalg.cond(C_pd):.2e}")
+        # Persist selected dependency info for downstream plotting (heatmap)
+        try:
+            st.session_state._dep_pairs = list(seen.keys())
+            st.session_state._dep_vars = sorted({x for pair in seen.keys() for x in pair})
+            st.session_state._has_deps = len(seen) > 0
+        except Exception:
+            st.session_state._dep_pairs = []
+            st.session_state._dep_vars = []
+            st.session_state._has_deps = False
     else:
         C_pd = np.eye(k)
+        # No dependency editor or disabled: clear stored selections
+        st.session_state._dep_pairs = []
+        st.session_state._dep_vars = []
+        st.session_state._has_deps = False
 
     st.divider()
 
@@ -1019,19 +1033,50 @@ with sim_tab:
 
         corr_df = out[[c for c in corr_inputs if c in out.columns]].copy()
         corr_df[target_label] = target_series.values
-        corr_mat = corr_df.corr(method="spearman").round(int(decimals))
+        corr_mat = corr_df.corr(method="spearman").round(int(st.session_state.get("heatmap_decimals", 1)))
         corr_mat.index = [alias.get(c, c) for c in corr_mat.index]
         corr_mat.columns = [alias.get(c, c) if c in corr_inputs else target_label for c in corr_mat.columns]
 
+        # Decide what to display based on user-selected dependencies
+        has_deps = bool(st.session_state.get("_has_deps", False))
+        dep_vars = list(st.session_state.get("_dep_vars", []))
+
+        if not has_deps:
+            # Show only Inputs vs Target as a single column heatmap
+            # Take the target column and drop the target row
+            display_df = corr_mat[[target_label]].copy()
+            if target_label in display_df.index:
+                display_df = display_df.drop(index=target_label)
+            heat_title = "Correlation heatmap (inputs vs base in‑place) — inputs vs target only"
+        else:
+            # When dependencies are defined, show the full correlation matrix
+            display_df = corr_mat
+            heat_title = "Correlation heatmap (full matrix)"
+
         heat = px.imshow(
-            corr_mat,
+            display_df,
             text_auto=True,
-            color_continuous_scale="Viridis",
-            zmin=-1,
-            zmax=1,
+            color_continuous_scale="RdBu",
+            range_color=[-1.0, 1.0],
+            color_continuous_midpoint=0.0,
             aspect="auto",
-            title="Correlation heatmap (inputs vs base in‑place)"
+            title=heat_title,
         )
+        # Increase readability of in-cell correlation text with adaptive sizing
+        try:
+            n_rows, n_cols = display_df.shape
+            max_dim = max(int(n_rows), int(n_cols))
+            if max_dim <= 5:
+                text_size = 16
+            elif max_dim <= 8:
+                text_size = 14
+            elif max_dim <= 12:
+                text_size = 12
+            else:
+                text_size = 10
+            heat.update_traces(textfont_size=text_size)
+        except Exception:
+            pass
         heat.update_layout(margin=dict(l=10, r=10, t=60, b=10), height=600)
         st.plotly_chart(heat, use_container_width=True)
         report_figs.append(heat)
@@ -1335,7 +1380,7 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
 
 ---
 ### Version & contact
-- **App version:** {1.1}
+- **App version:** {1.1.1}
 - **Contact the project maintainers via email for support.**
         """
     )
