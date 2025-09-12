@@ -14,7 +14,7 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.1.1"
+APP_VER = "v1.1.2"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # =============================================================
@@ -121,32 +121,23 @@ def make_distribution(dist_name, params):
             dist = stt.norm(loc=mu, scale=sigma)
         return dist, dist.ppf, dist.pdf
 
-    # ----- Truncated Normal -----
-    if name == "truncated normal":
-        mu, sigma = params["mean"], params["sd"]
-        lo, hi = params["min"], params["max"]
-        if not (hi > lo):
-            raise ValueError("Truncated Normal requires max > min")
-        if sigma <= 0:
-            raise ValueError("sd must be > 0")
-        a, b = (lo - mu) / sigma, (hi - mu) / sigma
-        dist = stt.truncnorm(a=a, b=b, loc=mu, scale=sigma)
-        return dist, dist.ppf, dist.pdf
-
     # ----- Lognormal -----
     if name == "lognormal":
         med = params["median"]; s = params["sigma_ln"]
         if s <= 0 or med <= 0:
             raise ValueError("Lognormal requires median>0 and sigma_ln>0")
-        dist = stt.lognorm(s=s, scale=np.exp(np.log(med)))
-        return dist, dist.ppf, dist.pdf
+        lo = params.get("min", None)
+        hi = params.get("max", None)
+        if (lo is not None) or (hi is not None):
+            if lo is None or hi is None:
+                raise ValueError("Provide both min and max to truncate the Lognormal.")
+            dist, ppf, pdf = trunc_lognorm_build(med, s, float(lo), float(hi))
+            return dist, ppf, pdf
+        else:
+            dist = stt.lognorm(s=s, scale=np.exp(np.log(med)))
+            return dist, dist.ppf, dist.pdf
 
-    # ----- Truncated Lognormal -----
-    if name == "truncated lognormal":
-        med = params["median"]; s = params["sigma_ln"]
-        lo, hi = params["min"], params["max"]
-        dist, ppf, pdf = trunc_lognorm_build(med, s, lo, hi)
-        return dist, ppf, pdf
+    # (Truncated Lognormal handled via 'lognormal' with optional bounds)
 
     # ----- Beta (scaled to [min,max]) -----
     if name == "beta":
@@ -480,9 +471,7 @@ with sim_tab:
                         "Triangular",
                         "PERT",
                         "Normal",
-                        "Truncated Normal",
                         "Lognormal",
-                        "Truncated Lognormal",
                         "Beta",
                         "Custom (P10/P50/P90)",
                         "Discrete",
@@ -510,30 +499,96 @@ with sim_tab:
                             )
 
                     elif dist_name == "Normal":
-                        c1, c2, c3, c4 = st.columns(4)
-                        params["mean"] = c1.number_input("mean", value=param_defaults.get("mean", 0.0), key=f"{label}_mean")
-                        params["sd"] = c2.number_input("sd", value=param_defaults.get("sd", 1.0), min_value=1e-12, format="%.6f", key=f"{label}_sd")
-                        params["min"] = c3.number_input("min (opt)", value=param_defaults.get("min", float("-inf")), key=f"{label}_nmin")
-                        params["max"] = c4.number_input("max (opt)", value=param_defaults.get("max", float("inf")), key=f"{label}_nmax")
+                        c1, c2 = st.columns(2)
+                        params["mean"] = c1.number_input(
+                            "mean",
+                            value=float(param_defaults.get("mean", 0.0)),
+                            step=0.01,
+                            format="%.6f",
+                            key=f"{label}_mean",
+                        )
+                        params["sd"] = c2.number_input(
+                            "sd",
+                            value=float(param_defaults.get("sd", 1.0)),
+                            min_value=1e-12,
+                            step=0.01,
+                            format="%.6f",
+                            key=f"{label}_sd",
+                        )
 
-                    elif dist_name == "Truncated Normal":
-                        c1, c2, c3, c4 = st.columns(4)
-                        params["mean"] = c1.number_input("mean", value=param_defaults.get("mean", 0.0), key=f"{label}_tn_mean")
-                        params["sd"] = c2.number_input("sd", value=param_defaults.get("sd", 1.0), min_value=1e-12, format="%.6f", key=f"{label}_tn_sd")
-                        params["min"] = c3.number_input("min", value=param_defaults.get("min", -1.0), key=f"{label}_tn_min")
-                        params["max"] = c4.number_input("max", value=param_defaults.get("max", 1.0), key=f"{label}_tn_max")
+                        # Optional truncation bounds to avoid inf defaults causing UI quirks
+                        _nb_min = param_defaults.get("min", None)
+                        _nb_max = param_defaults.get("max", None)
+                        _nb_has_bounds = (
+                            (_nb_min is not None) and (_nb_max is not None)
+                            and np.isfinite(float(_nb_min)) and np.isfinite(float(_nb_max))
+                        )
+                        add_bounds = st.checkbox(
+                            "Add bounds (truncate)", value=bool(_nb_has_bounds), key=f"{label}_normal_bounds"
+                        )
+                        if add_bounds:
+                            c3, c4 = st.columns(2)
+                            params["min"] = c3.number_input(
+                                "min",
+                                value=float(param_defaults.get("min", -1.0)),
+                                step=0.01,
+                                format="%.6f",
+                                key=f"{label}_nmin",
+                            )
+                            params["max"] = c4.number_input(
+                                "max",
+                                value=float(param_defaults.get("max", 1.0)),
+                                step=0.01,
+                                format="%.6f",
+                                key=f"{label}_nmax",
+                            )
 
+                    
                     elif dist_name == "Lognormal":
                         c1, c2 = st.columns(2)
-                        params["median"] = c1.number_input("median", value=param_defaults.get("median", 1.0), min_value=1e-12, format="%.6f", key=f"{label}_med")
-                        params["sigma_ln"] = c2.number_input("sigma_ln (ln-space sd)", value=param_defaults.get("sigma_ln", 0.5), min_value=1e-6, format="%.6f", key=f"{label}_sig")
-
-                    elif dist_name == "Truncated Lognormal":
-                        c1, c2, c3, c4 = st.columns(4)
-                        params["median"] = c1.number_input("median", value=param_defaults.get("median", 1.0), min_value=1e-12, format="%.6f", key=f"{label}_tl_med")
-                        params["sigma_ln"] = c2.number_input("sigma_ln (ln-space sd)", value=param_defaults.get("sigma_ln", 0.5), min_value=1e-6, format="%.6f", key=f"{label}_tl_sig")
-                        params["min"] = c3.number_input("min", value=param_defaults.get("min", 0.1), min_value=1e-12, format="%.6f", key=f"{label}_tl_min")
-                        params["max"] = c4.number_input("max", value=param_defaults.get("max", 10.0), min_value=1e-12, format="%.6f", key=f"{label}_tl_max")
+                        params["median"] = c1.number_input(
+                            "median",
+                            value=float(param_defaults.get("median", 1.0)),
+                            min_value=1e-12,
+                            step=0.01,
+                            format="%.6f",
+                            key=f"{label}_med",
+                        )
+                        params["sigma_ln"] = c2.number_input(
+                            "sigma_ln (ln-space sd)",
+                            value=float(param_defaults.get("sigma_ln", 0.5)),
+                            min_value=1e-6,
+                            step=0.01,
+                            format="%.6f",
+                            key=f"{label}_sig",
+                        )
+                        _lnb_min = param_defaults.get("min", None)
+                        _lnb_max = param_defaults.get("max", None)
+                        _lnb_has_bounds = (
+                            (_lnb_min is not None) and (_lnb_max is not None)
+                            and np.isfinite(float(_lnb_min)) and np.isfinite(float(_lnb_max))
+                        )
+                        add_bounds_ln = st.checkbox(
+                            "Add bounds (truncate)", value=bool(_lnb_has_bounds), key=f"{label}_ln_bounds"
+                        )
+                        if add_bounds_ln:
+                            d1, d2 = st.columns(2)
+                            params["min"] = d1.number_input(
+                                "min",
+                                value=float(param_defaults.get("min", 0.1)),
+                                min_value=1e-12,
+                                step=0.01,
+                                format="%.6f",
+                                key=f"{label}_ln_min",
+                            )
+                            params["max"] = d2.number_input(
+                                "max",
+                                value=float(param_defaults.get("max", 10.0)),
+                                min_value=1e-12,
+                                step=0.01,
+                                format="%.6f",
+                                key=f"{label}_ln_max",
+                            )
 
                     elif dist_name == "Beta":
                         c1, c2, c3, c4 = st.columns(4)
@@ -641,7 +696,7 @@ with sim_tab:
         st.subheader("GRV Mode — Direct GRV distribution")
         st.caption("Specify the distribution of **GRV in cubic meters**. This bypasses A×h and curve integration.")
         GRV_dist, GRV_ppf, GRV_name, GRV_params, GRV_ok, GRV_fig = dist_editor(
-            "GRV (m³)", 5, {"median": 1e8, "sigma_ln": 0.5}, units_label="m³"
+            "GRV (m³)", 4, {"median": 1e8, "sigma_ln": 0.5}, units_label="m³"
         )
         curve = None; curve_name = None; curve_ok = True
         use_grv_scale = False; grv_scale_ppf = None; grv_scale_params = {}
@@ -695,7 +750,7 @@ with sim_tab:
     use_grv_scale = st.checkbox("Apply GRV scale factor (multiplier)?", value=False, key="use_grv_scale")
     if use_grv_scale:
         _, grv_scale_ppf, grv_scale_name, grv_scale_params, grv_scale_ok, grv_scale_fig = dist_editor(
-            "GRV scale factor (multiplier)", 5, {"median": 1.0, "sigma_ln": 0.2}, units_label="×"
+            "GRV scale factor (multiplier)", 4, {"median": 1.0, "sigma_ln": 0.2}, units_label="×"
         )
     else:
         grv_scale_ppf = None; grv_scale_params = {}; grv_scale_ok = True; grv_scale_fig = None
@@ -716,7 +771,7 @@ with sim_tab:
     # Optional RF
     include_rf = st.checkbox("Include Recovery Factor (compute recoverable volumes)", value=True, key="include_rf")
     if include_rf:
-        RF_dist, RF_ppf, RF_name, RF_params, RF_ok, RF_fig = dist_editor("Recovery Factor (RF, fraction)", 5, {"median": 0.25, "sigma_ln": 0.3}, units_label="fraction")
+        RF_dist, RF_ppf, RF_name, RF_params, RF_ok, RF_fig = dist_editor("Recovery Factor (RF, fraction)", 4, {"median": 0.25, "sigma_ln": 0.3}, units_label="fraction")
     else:
         RF_ppf = None; RF_ok = True; RF_fig = None; RF_name = "—"; RF_params = {}
 
@@ -791,23 +846,53 @@ with sim_tab:
             st.session_state.dep_rows,
             use_container_width=True,
             num_rows="dynamic",
+            hide_index=True,
             key="dep_editor_rows",
+            column_order=["Var i", "Var j", "rho"],
             column_config={
                 "Var i": st.column_config.SelectboxColumn(options=var_names),
                 "Var j": st.column_config.SelectboxColumn(options=var_names),
                 "rho": st.column_config.NumberColumn(min_value=-0.999, max_value=0.999, step=0.05, format="%.3f"),
             },
         )
-        st.session_state.dep_rows = dep_df.copy()
+        st.caption("Pick two variables and set rho; blank rho defaults to 0.000.")
+
+        # Normalize the edited dataframe for better UX
+        df_norm = dep_df.copy()
+        for col in ["Var i", "Var j"]:
+            if col in df_norm.columns:
+                df_norm[col] = df_norm[col].astype(object).where(pd.notna(df_norm[col]), "")
+        if "rho" in df_norm.columns:
+            # If both vars chosen but rho blank, treat as 0.000 for visibility and logic
+            mask_fill0 = (
+                df_norm.get("Var i", "").astype(str).str.len() > 0
+            ) & (
+                df_norm.get("Var j", "").astype(str).str.len() > 0
+            ) & (
+                df_norm["rho"].isna()
+            )
+            df_norm.loc[mask_fill0, "rho"] = 0.0
+        # Drop rows that are entirely empty (no selection, no rho)
+        empty_mask = (
+            (df_norm.get("Var i", "").astype(str).str.len() == 0)
+            & (df_norm.get("Var j", "").astype(str).str.len() == 0)
+            & (df_norm.get("rho").isna())
+        ) if set(["Var i", "Var j", "rho"]).issubset(df_norm.columns) else pd.Series(False, index=df_norm.index)
+        df_norm = df_norm[~empty_mask]
+
+        st.session_state.dep_rows = df_norm.copy()
 
         # Validate duplicates/conflicts
         conflicts = []
         seen = {}
-        for _, r in dep_df.dropna().iterrows():
+        for _, r in df_norm.iterrows():
             a = str(r.get("Var i", "")).strip()
             b = str(r.get("Var j", "")).strip()
-            v = r.get("rho", None)
-            if not a or not b or (v is None): continue
+            v = r.get("rho", 0.0)
+            if not a or not b:
+                continue
+            if pd.isna(v):
+                v = 0.0
             if a == b: continue
             if a not in var_names or b not in var_names: continue
             key_ab = tuple(sorted([a, b]))
@@ -1323,7 +1408,7 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
    - **Upload Area–Depth curve** — upload a CSV/XLSX with two columns: `depth` and `area`. Use the unit selectors next to the uploader. The app integrates area over depth to compute GRV.
    - **Direct GRV distribution (m³)** — provide a distribution for GRV in m³.
 3) (Optional) **Apply GRV scale factor** — a multiplicative “fudge factor” on GRV. If scaling is used, *sensitivity charts treat geometry as a single GRV input* (see Notes below).
-4) Define **Other inputs**: NTG, phi, Sw, and **Bo** (Oil) or **Bg** (Gas). Use any supported distribution (Uniform, Triangular, PERT, Normal/Truncated, Lognormal/Truncated, Beta, Custom P10/P50/P90, Discrete).
+4) Define **Other inputs**: NTG, phi, Sw, and **Bo** (Oil) or **Bg** (Gas). Use any supported distribution (Uniform, Triangular, PERT, Normal (optional bounds), Lognormal (optional bounds), Beta, Custom P10/P50/P90, Discrete).
 5) (Optional) **Recovery Factor (RF)** — enable to compute reserves/recoverable volumes.
 6) (Optional multi‑phase)**:**
    - **Oil**: enable **Rs (scf/stb)** to compute **SGIIP**.
@@ -1376,11 +1461,11 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
 ### Tips
 - Clip fractions (NTG, phi, Sw, RF) are automatically bounded to [0, 1].  
 - Use **Custom (P10/P50/P90)** when eliciting inputs in exceedance terms (P10 high, P90 low).  
-- For highly skewed parameters, prefer **Lognormal** or **Truncated Lognormal**.
+- For highly skewed parameters, prefer **Lognormal** (optionally truncated with bounds).
 
 ---
 ### Version & contact
-- **App version:** {1.1.1}
+- **App version:** {1.1.2}
 - **Contact the project maintainers via email for support.**
         """
     )
