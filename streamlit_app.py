@@ -14,8 +14,51 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.1.2"
+APP_VER = "v1.1.3"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
+
+# =============================================================
+# Input helpers
+# =============================================================
+def float_text_input(label, default, key, min_value=None, max_value=None, fmt="%.6f", help=None):
+    """Locale-agnostic float input via text field.
+
+    Accepts both '.' and ',' as decimal separators and tolerates partial typing.
+    Returns the last valid parsed float; shows the raw text as typed.
+    """
+    raw_key = f"{key}__raw"
+    val_key = f"{key}__val"
+
+    # Initialize defaults on first run
+    if raw_key not in st.session_state:
+        try:
+            st.session_state[raw_key] = (fmt % float(default))
+        except Exception:
+            st.session_state[raw_key] = str(default)
+    if val_key not in st.session_state:
+        try:
+            st.session_state[val_key] = float(default)
+        except Exception:
+            st.session_state[val_key] = 0.0
+
+    raw = st.text_input(label, value=st.session_state[raw_key], key=raw_key, help=help)
+
+    # Try to parse with tolerant rules
+    s = (raw or "").strip().replace("\u200b", "").replace(",", ".")
+    last_valid = st.session_state[val_key]
+    try:
+        v = float(s)
+        if min_value is not None and v < min_value:
+            st.caption(f"Note: enforcing min = {min_value}")
+            v = float(min_value)
+        if max_value is not None and v > max_value:
+            st.caption(f"Note: enforcing max = {max_value}")
+            v = float(max_value)
+        st.session_state[val_key] = v
+        return v
+    except Exception:
+        # Keep last valid value while user is still typing
+        return last_valid
 
 # =============================================================
 # Units and conversions
@@ -499,21 +542,29 @@ with sim_tab:
                             )
 
                     elif dist_name == "Normal":
+                        # Choose formatting precision based on magnitude (Bg needs more precision)
+                        mean_def = float(param_defaults.get("mean", 0.0))
+                        sd_def = float(param_defaults.get("sd", 1.0))
+                        min_def = float(param_defaults.get("min", mean_def)) if param_defaults.get("min", None) is not None else mean_def
+                        max_def = float(param_defaults.get("max", mean_def)) if param_defaults.get("max", None) is not None else mean_def
+                        scale_mag = max(abs(mean_def), abs(sd_def), abs(min_def), abs(max_def))
+                        fmt_norm = "%.4f" if scale_mag < 0.1 else "%.2f"
+
                         c1, c2 = st.columns(2)
-                        params["mean"] = c1.number_input(
+                        params["mean"] = float_text_input(
                             "mean",
-                            value=float(param_defaults.get("mean", 0.0)),
-                            step=0.01,
-                            format="%.6f",
+                            default=mean_def,
                             key=f"{label}_mean",
+                            fmt=fmt_norm,
+                            help="Accepts '.' or ',' as decimal",
                         )
-                        params["sd"] = c2.number_input(
+                        params["sd"] = float_text_input(
                             "sd",
-                            value=float(param_defaults.get("sd", 1.0)),
-                            min_value=1e-12,
-                            step=0.01,
-                            format="%.6f",
+                            default=sd_def,
                             key=f"{label}_sd",
+                            min_value=1e-12,
+                            fmt=fmt_norm,
+                            help="Accepts '.' or ',' as decimal (sd>0)",
                         )
 
                         # Optional truncation bounds to avoid inf defaults causing UI quirks
@@ -528,39 +579,39 @@ with sim_tab:
                         )
                         if add_bounds:
                             c3, c4 = st.columns(2)
-                            params["min"] = c3.number_input(
+                            params["min"] = float_text_input(
                                 "min",
-                                value=float(param_defaults.get("min", -1.0)),
-                                step=0.01,
-                                format="%.6f",
+                                default=float(param_defaults.get("min", -1.0)),
                                 key=f"{label}_nmin",
+                                fmt=fmt_norm,
+                                help="Accepts '.' or ',' as decimal",
                             )
-                            params["max"] = c4.number_input(
+                            params["max"] = float_text_input(
                                 "max",
-                                value=float(param_defaults.get("max", 1.0)),
-                                step=0.01,
-                                format="%.6f",
+                                default=float(param_defaults.get("max", 1.0)),
                                 key=f"{label}_nmax",
+                                fmt=fmt_norm,
+                                help="Accepts '.' or ',' as decimal",
                             )
 
                     
                     elif dist_name == "Lognormal":
                         c1, c2 = st.columns(2)
-                        params["median"] = c1.number_input(
+                        params["median"] = float_text_input(
                             "median",
-                            value=float(param_defaults.get("median", 1.0)),
-                            min_value=1e-12,
-                            step=0.01,
-                            format="%.6f",
+                            default=float(param_defaults.get("median", 1.0)),
                             key=f"{label}_med",
+                            min_value=1e-12,
+                            fmt="%.2f",
+                            help="Accepts '.' or ',' as decimal (median>0)",
                         )
-                        params["sigma_ln"] = c2.number_input(
+                        params["sigma_ln"] = float_text_input(
                             "sigma_ln (ln-space sd)",
-                            value=float(param_defaults.get("sigma_ln", 0.5)),
-                            min_value=1e-6,
-                            step=0.01,
-                            format="%.6f",
+                            default=float(param_defaults.get("sigma_ln", 0.5)),
                             key=f"{label}_sig",
+                            min_value=1e-6,
+                            fmt="%.2f",
+                            help="Accepts '.' or ',' as decimal (sd>0)",
                         )
                         _lnb_min = param_defaults.get("min", None)
                         _lnb_max = param_defaults.get("max", None)
@@ -578,7 +629,7 @@ with sim_tab:
                                 value=float(param_defaults.get("min", 0.1)),
                                 min_value=1e-12,
                                 step=0.01,
-                                format="%.6f",
+                                format="%.2f",
                                 key=f"{label}_ln_min",
                             )
                             params["max"] = d2.number_input(
@@ -586,14 +637,28 @@ with sim_tab:
                                 value=float(param_defaults.get("max", 10.0)),
                                 min_value=1e-12,
                                 step=0.01,
-                                format="%.6f",
+                                format="%.2f",
                                 key=f"{label}_ln_max",
                             )
 
                     elif dist_name == "Beta":
                         c1, c2, c3, c4 = st.columns(4)
-                        params["alpha"] = c1.number_input("alpha", value=param_defaults.get("alpha", 2.0), min_value=0.0001, format="%.4f", key=f"{label}_a")
-                        params["beta"] = c2.number_input("beta", value=param_defaults.get("beta", 2.0), min_value=0.0001, format="%.4f", key=f"{label}_b")
+                        params["alpha"] = c1.number_input(
+                            "alpha",
+                            value=param_defaults.get("alpha", 2.0),
+                            min_value=0.0001,
+                            step=0.01,
+                            format="%.2f",
+                            key=f"{label}_a",
+                        )
+                        params["beta"] = c2.number_input(
+                            "beta",
+                            value=param_defaults.get("beta", 2.0),
+                            min_value=0.0001,
+                            step=0.01,
+                            format="%.2f",
+                            key=f"{label}_b",
+                        )
                         params["min"] = c3.number_input("min (scale)", value=param_defaults.get("min", 0.0), key=f"{label}_bmin")
                         params["max"] = c4.number_input("max (scale)", value=param_defaults.get("max", 1.0), key=f"{label}_bmax")
 
@@ -842,50 +907,55 @@ with sim_tab:
         st.caption("Add only the pairs you want to correlate. Unlisted pairs default to 0.00.")
         if "dep_rows" not in st.session_state:
             st.session_state.dep_rows = pd.DataFrame(columns=["Var i", "Var j", "rho"])
-        dep_df = st.data_editor(
-            st.session_state.dep_rows,
-            use_container_width=True,
-            num_rows="dynamic",
-            hide_index=True,
-            key="dep_editor_rows",
-            column_order=["Var i", "Var j", "rho"],
-            column_config={
-                "Var i": st.column_config.SelectboxColumn(options=var_names),
-                "Var j": st.column_config.SelectboxColumn(options=var_names),
-                "rho": st.column_config.NumberColumn(min_value=-0.999, max_value=0.999, step=0.05, format="%.3f"),
-            },
-        )
-        st.caption("Pick two variables and set rho; blank rho defaults to 0.000.")
 
-        # Normalize the edited dataframe for better UX
-        df_norm = dep_df.copy()
-        for col in ["Var i", "Var j"]:
-            if col in df_norm.columns:
-                df_norm[col] = df_norm[col].astype(object).where(pd.notna(df_norm[col]), "")
-        if "rho" in df_norm.columns:
-            # If both vars chosen but rho blank, treat as 0.000 for visibility and logic
-            mask_fill0 = (
-                df_norm.get("Var i", "").astype(str).str.len() > 0
-            ) & (
-                df_norm.get("Var j", "").astype(str).str.len() > 0
-            ) & (
-                df_norm["rho"].isna()
+        with st.form("deps_form", clear_on_submit=False):
+            dep_df = st.data_editor(
+                st.session_state.dep_rows,
+                use_container_width=True,
+                num_rows="dynamic",
+                hide_index=True,
+                key="dep_editor_rows",
+                column_order=["Var i", "Var j", "rho"],
+                column_config={
+                    "Var i": st.column_config.SelectboxColumn(options=var_names),
+                    "Var j": st.column_config.SelectboxColumn(options=var_names),
+                    "rho": st.column_config.NumberColumn(min_value=-0.999, max_value=0.999, step=0.05, format="%.3f"),
+                },
             )
-            df_norm.loc[mask_fill0, "rho"] = 0.0
-        # Drop rows that are entirely empty (no selection, no rho)
-        empty_mask = (
-            (df_norm.get("Var i", "").astype(str).str.len() == 0)
-            & (df_norm.get("Var j", "").astype(str).str.len() == 0)
-            & (df_norm.get("rho").isna())
-        ) if set(["Var i", "Var j", "rho"]).issubset(df_norm.columns) else pd.Series(False, index=df_norm.index)
-        df_norm = df_norm[~empty_mask]
+            st.caption("Pick two variables and set rho; blank rho defaults to 0.000.")
+            submitted = st.form_submit_button("Apply dependencies")
 
-        st.session_state.dep_rows = df_norm.copy()
+        # If submitted, normalize and persist the edited rows
+        if 'dep_df' in locals() and submitted:
+            df_norm = dep_df.copy()
+            for col in ["Var i", "Var j"]:
+                if col in df_norm.columns:
+                    df_norm[col] = df_norm[col].astype(object).where(pd.notna(df_norm[col]), "")
+            if "rho" in df_norm.columns:
+                mask_fill0 = (
+                    df_norm.get("Var i", "").astype(str).str.len() > 0
+                ) & (
+                    df_norm.get("Var j", "").astype(str).str.len() > 0
+                ) & (
+                    df_norm["rho"].isna()
+                )
+                df_norm.loc[mask_fill0, "rho"] = 0.0
+            empty_mask = (
+                (df_norm.get("Var i", "").astype(str).str.len() == 0)
+                & (df_norm.get("Var j", "").astype(str).str.len() == 0)
+                & (df_norm.get("rho").isna())
+            ) if set(["Var i", "Var j", "rho"]).issubset(df_norm.columns) else pd.Series(False, index=df_norm.index)
+            df_norm = df_norm[~empty_mask]
+            # Reindex for neatness (hidden index, but keeps stable order)
+            df_norm.index = np.arange(1, len(df_norm) + 1)
+            st.session_state.dep_rows = df_norm.copy()
+            st.success("Dependencies applied.", icon="✅")
 
-        # Validate duplicates/conflicts
+        # Build correlation matrix from the persisted rows
+        df_src = st.session_state.dep_rows.copy()
         conflicts = []
         seen = {}
-        for _, r in df_norm.iterrows():
+        for _, r in df_src.iterrows():
             a = str(r.get("Var i", "")).strip()
             b = str(r.get("Var j", "")).strip()
             v = r.get("rho", 0.0)
@@ -893,8 +963,10 @@ with sim_tab:
                 continue
             if pd.isna(v):
                 v = 0.0
-            if a == b: continue
-            if a not in var_names or b not in var_names: continue
+            if a == b:
+                continue
+            if a not in var_names or b not in var_names:
+                continue
             key_ab = tuple(sorted([a, b]))
             v = float(v)
             if key_ab in seen and abs(seen[key_ab] - v) > 1e-9:
@@ -904,15 +976,12 @@ with sim_tab:
         if conflicts:
             st.error("Conflicting entries for the same pair: " + "; ".join(conflicts))
 
-        # Assemble correlation matrix (symmetric, ones on diagonal)
         C = np.eye(k)
         for (a, b), v in seen.items():
             i, j = var_names.index(a), var_names.index(b)
             C[i, j] = C[j, i] = max(-0.999, min(0.999, float(v)))
         np.fill_diagonal(C, 1.0)
         C_pd = nearest_pd(C)
-        #st.caption(f"Condition number of correlation matrix (used internally): {np.linalg.cond(C_pd):.2e}")
-        # Persist selected dependency info for downstream plotting (heatmap)
         try:
             st.session_state._dep_pairs = list(seen.keys())
             st.session_state._dep_vars = sorted({x for pair in seen.keys() for x in pair})
@@ -1084,15 +1153,26 @@ with sim_tab:
         # =========
         # Correlation heatmap (inputs vs base in-place) — Viridis, wider
         # =========
+        # Only include variables that impact base in‑place (STOIIP/GIIP)
+        # Oil: geometry, NTG, phi, Sw, Bo
+        # Gas: geometry, NTG, phi, Sw, Bg
         corr_inputs = []
         if "GRV_m3" in out.columns:
             corr_inputs.append("GRV_m3")
         else:
-            if "A" in var_names: corr_inputs.append("A")
-            if "h" in var_names: corr_inputs.append("h")
-        for nm in ["NTG","phi","Sw","Bo","Bg","RF","Rs","CGR"]:
+            if "A" in var_names:
+                corr_inputs.append("A")
+            if "h" in var_names:
+                corr_inputs.append("h")
+        for nm in ["NTG", "phi", "Sw"]:
             if nm in var_names and nm not in corr_inputs:
                 corr_inputs.append(nm)
+        if fluid == "Oil":
+            if "Bo" in var_names and "Bo" not in corr_inputs:
+                corr_inputs.append("Bo")
+        else:
+            if "Bg" in var_names and "Bg" not in corr_inputs:
+                corr_inputs.append("Bg")
 
         alias = {
             "A": f"A ({u_area})",
@@ -1465,7 +1545,7 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
 
 ---
 ### Version & contact
-- **App version:** {1.1.2}
+- **App version:** {1.1.3}
 - **Contact the project maintainers via email for support.**
         """
     )
