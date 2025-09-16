@@ -14,7 +14,7 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.1.3"
+APP_VER = "v1.1.4"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # =============================================================
@@ -923,9 +923,20 @@ with sim_tab:
                 },
             )
             st.caption("Pick two variables and set rho; blank rho defaults to 0.000.")
-            submitted = st.form_submit_button("Apply dependencies")
+            col_apply, col_reset = st.columns(2)
+            with col_apply:
+                submitted = st.form_submit_button("Apply dependencies")
+            with col_reset:
+                reset_clicked = st.form_submit_button("Reset dependencies", type="secondary")
 
         # If submitted, normalize and persist the edited rows
+        if 'reset_clicked' in locals() and reset_clicked:
+            st.session_state.dep_rows = pd.DataFrame(columns=["Var i", "Var j", "rho"])
+            st.session_state._dep_pairs = []
+            st.session_state._dep_vars = []
+            st.session_state._has_deps = False
+            st.success("Dependencies reset.")
+
         if 'dep_df' in locals() and submitted:
             df_norm = dep_df.copy()
             for col in ["Var i", "Var j"]:
@@ -1545,7 +1556,7 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
 
 ---
 ### Version & contact
-- **App version:** {1.1.3}
+- **App version:** {1.1.4}
 - **Contact the project maintainers via email for support.**
         """
     )
