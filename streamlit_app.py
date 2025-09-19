@@ -14,7 +14,7 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.1.4"
+APP_VER = "v1.1.5"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # =============================================================
@@ -1147,7 +1147,7 @@ with sim_tab:
                 hist_fig.add_vline(qP90, line_dash="dot", line_color=annot_color, annotation_text="P90", annotation_position="top left")
                 hist_fig.add_vline(qP50, line_dash="dash", line_color=annot_color, annotation_text="P50", annotation_position="top left")
                 hist_fig.add_vline(qP10, line_dash="dot", line_color=annot_color, annotation_text="P10", annotation_position="top left")
-                hist_fig.update_layout(xaxis_title=title, yaxis_title="Count")
+                hist_fig.update_layout(xaxis_title=title, yaxis_title="Count", height=320)
                 st.plotly_chart(hist_fig, use_container_width=True)
                 report_figs.append(hist_fig)
             with c2:
@@ -1157,7 +1157,7 @@ with sim_tab:
                 cdf_fig.add_vline(qP90, line_dash="dot", line_color=annot_color, annotation_text="P90", annotation_position="top left")
                 cdf_fig.add_vline(qP50, line_dash="dash", line_color=annot_color, annotation_text="P50", annotation_position="top left")
                 cdf_fig.add_vline(qP10, line_dash="dot", line_color=annot_color, annotation_text="P10", annotation_position="top left")
-                cdf_fig.update_layout(title=f"CDF — {title}", xaxis_title=title, yaxis_title="P(X ≤ x)")
+                cdf_fig.update_layout(title=f"CDF — {title}", xaxis_title=title, yaxis_title="P(X ≤ x)", height=320)
                 st.plotly_chart(cdf_fig, use_container_width=True)
                 report_figs.append(cdf_fig)
 
@@ -1556,7 +1556,7 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
 
 ---
 ### Version & contact
-- **App version:** {1.1.4}
+- **App version:** {1.1.5}
 - **Contact the project maintainers via email for support.**
         """
     )
