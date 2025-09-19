@@ -14,7 +14,7 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.2.0"
+APP_VER = "v1.1.5"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # Inject custom styles once for the volumetric formula block
@@ -765,7 +765,7 @@ with sim_tab:
                     ps = np.array(params.get("probs", []), dtype=float)
                     fig_prev = go.Figure()
                     fig_prev.add_trace(go.Bar(x=xs, y=ps, name=f"PMF {label}", marker_color=plot_color))
-                    fig_prev.update_layout(title=f"{label} — Discrete Distribution",
+                    fig_prev.update_layout(title=f"{label}",
                                            xaxis_title=label + (f" ({units_label})" if units_label else ""),
                                            yaxis_title="Probability")
                     st.plotly_chart(fig_prev, use_container_width=True)
@@ -776,7 +776,7 @@ with sim_tab:
                     ys = pdf(xs)
                     fig_prev = go.Figure()
                     fig_prev.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=f"PDF {label}", line=dict(color=plot_color)))
-                    fig_prev.update_layout(title=f"{label} — Distribution Preview",
+                    fig_prev.update_layout(title=f"{label}",
                                            xaxis_title=label + (f" ({units_label})" if units_label else ""),
                                            yaxis_title="PDF")
                     st.plotly_chart(fig_prev, use_container_width=True)
@@ -907,20 +907,33 @@ with sim_tab:
             CGR_ppf=None; CGR_ok=True; CGR_fig=None; CGR_name="—"; CGR_params={}
 
     # Collect figs safely for the report
-    input_figs = {k:v for k,v in {
-        "Area (A)": A_fig,
-        "Gross Thickness (h)": h_fig,
-        "Net-to-Gross (NTG, fraction)": NTG_fig,
-        "Porosity (phi, fraction)": phi_fig,
-        "Water Saturation (Sw, fraction)": Sw_fig,
-        "Oil FVF (Bo, rm³/stb)": Bo_fig,
-        "Gas FVF (Bg, rm³/scf)": Bg_fig,
-        "Recovery Factor (RF, fraction)": RF_fig,
-        "Solution GOR (Rs, scf/stb)": (Rs_fig if (fluid == "Oil" and 'include_rs' in locals() and include_rs) else None),
-        "Condensate Yield (CGR, STB/MMscf)": (CGR_fig if (fluid == "Gas" and 'include_cgr' in locals() and include_cgr) else None),
-        "GRV scale factor (multiplier)": (grv_scale_fig if use_grv_scale else None),
-        "GRV (m³)": GRV_fig if ('GRV_fig' in locals() and GRV_fig is not None) else None,
-    }.items() if v is not None}
+    fig_entries = []
+    if curve_preview_fig is not None:
+        fig_entries.append(("Area–Depth curve (SI)", curve_preview_fig))
+    if 'GRV_fig' in locals() and GRV_fig is not None:
+        fig_entries.append(("GRV (m³)", GRV_fig))
+    if use_grv_scale and grv_scale_fig is not None:
+        fig_entries.append(("GRV scale factor (multiplier)", grv_scale_fig))
+
+    rs_entry = Rs_fig if (fluid == "Oil" and 'include_rs' in locals() and include_rs) else None
+    cgr_entry = CGR_fig if (fluid == "Gas" and 'include_cgr' in locals() and include_cgr) else None
+
+    for name, fig in [
+        ("Area (A)", A_fig),
+        ("Gross Thickness (h)", h_fig),
+        ("Net-to-Gross (NTG, fraction)", NTG_fig),
+        ("Porosity (phi, fraction)", phi_fig),
+        ("Water Saturation (Sw, fraction)", Sw_fig),
+        ("Oil FVF (Bo, rm³/stb)", Bo_fig),
+        ("Gas FVF (Bg, rm³/scf)", Bg_fig),
+        ("Recovery Factor (RF, fraction)", RF_fig),
+        ("Solution GOR (Rs, scf/stb)", rs_entry),
+        ("Condensate Yield (CGR, STB/MMscf)", cgr_entry),
+    ]:
+        if fig is not None:
+            fig_entries.append((name, fig))
+
+    input_figs = dict(fig_entries)
 
     # =========================
     # Dependencies (add only the pairs you want)
@@ -1063,7 +1076,7 @@ with sim_tab:
     # Consolidated input distribution grid (optional toggle once inputs validate)
     input_fig_items = list(input_figs.items())
     if inputs_ok and input_fig_items:
-        st.subheader("Input distributions overview")
+        st.subheader("Input distributions")
         st.caption("Toggle to preview every configured input distribution in a compact grid.")
         show_input_grid = st.checkbox(
             "Show all input distributions",
@@ -1072,13 +1085,13 @@ with sim_tab:
         )
         st.session_state["_show_input_grid"] = show_input_grid
         if show_input_grid:
-            cols_per_row = 3 if len(input_fig_items) >= 3 else len(input_fig_items)
+            num_figs = len(input_fig_items)
+            cols_per_row = 3 if num_figs >= 3 else num_figs if num_figs > 0 else 1
             for start in range(0, len(input_fig_items), cols_per_row):
                 row_items = input_fig_items[start:start + cols_per_row]
-                columns = st.columns(len(row_items))
-                for column, (label, fig) in zip(columns, row_items):
-                    with column:
-                        st.markdown(f"**{label}**")
+                columns = st.columns(cols_per_row)
+                for idx, (label, fig) in enumerate(row_items):
+                    with columns[idx]:
                         fig_copy = go.Figure(fig)
                         fig_copy.update_layout(height=260, margin=dict(l=10, r=10, t=40, b=10))
                         st.plotly_chart(fig_copy, use_container_width=True, config={"displayModeBar": False})
@@ -1631,7 +1644,7 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
 
 ---
 ### Version & contact
-- **App version:** {1.2.0}
+- **App version:** {1.1.5}
 - **Contact the project maintainers via email for support.**
         """
     )
