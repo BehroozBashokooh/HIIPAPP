@@ -14,7 +14,7 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.1.5"
+APP_VER = "v1.2.0"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # Inject custom styles once for the volumetric formula block
@@ -94,6 +94,107 @@ def float_text_input(label, default, key, min_value=None, max_value=None, fmt="%
     except Exception:
         # Keep last valid value while user is still typing
         return last_valid
+
+
+def estimate_support_bounds(dist_name, params, ppf):
+    """Best-effort lower/upper support estimates for warning guards."""
+    name = (dist_name or "").lower()
+    lower = None
+    upper = None
+
+    def _try_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    # Direct min/max style parameters
+    if name in {"uniform (random)", "uniform", "random", "triangular", "pert", "beta", "normal", "lognormal"}:
+        lower = _try_float(params.get("min"))
+        upper = _try_float(params.get("max"))
+
+    elif name == "custom (p10/p50/p90)":
+        fam = (params.get("family") or "").lower()
+        if fam == "beta":
+            lower = _try_float(params.get("min"))
+            upper = _try_float(params.get("max"))
+        else:
+            values = [params.get("p10"), params.get("p50"), params.get("p90")]
+            finite_vals = [ _try_float(v) for v in values if _try_float(v) is not None ]
+            if finite_vals:
+                lower = min(finite_vals)
+                upper = max(finite_vals)
+
+    elif name == "discrete":
+        values = params.get("values")
+        if values:
+            finite_vals = [_try_float(v) for v in values if _try_float(v) is not None]
+            if finite_vals:
+                lower = min(finite_vals)
+                upper = max(finite_vals)
+
+    # Sample tails via PPF when available to detect extra spread beyond declared bounds
+    if ppf is not None:
+        candidates = []
+        for q in (1e-5, 1e-4, 1e-3):
+            try:
+                val = float(ppf(q))
+            except Exception:
+                continue
+            if np.isfinite(val):
+                candidates.append(val)
+        if candidates:
+            tail_min = min(candidates)
+            lower = tail_min if lower is None else min(lower, tail_min)
+
+        candidates = []
+        for q in (1 - 1e-5, 1 - 1e-4, 1 - 1e-3):
+            try:
+                val = float(ppf(q))
+            except Exception:
+                continue
+            if np.isfinite(val):
+                candidates.append(val)
+        if candidates:
+            tail_max = max(candidates)
+            upper = tail_max if upper is None else max(upper, tail_max)
+
+    return lower, upper
+
+
+def warn_if_out_of_bounds(
+    label,
+    dist_name,
+    params,
+    ppf,
+    *,
+    lower=None,
+    lower_inclusive=True,
+    upper=None,
+    upper_inclusive=True,
+    low_msg=None,
+    high_msg=None,
+):
+    """Raise Streamlit warnings when estimated support violates bounds."""
+    lower_est, upper_est = estimate_support_bounds(dist_name, params, ppf)
+
+    def fmt(val):
+        try:
+            return f"{val:.4g}"
+        except Exception:
+            return str(val)
+
+    if lower is not None and lower_est is not None:
+        violates_lower = (lower_inclusive and lower_est < lower) or (not lower_inclusive and lower_est <= lower)
+        if violates_lower:
+            message = low_msg or f"{label} distribution extends below {fmt(lower)}; adjust the inputs to respect physical limits."
+            st.warning(message)
+
+    if upper is not None and upper_est is not None:
+        violates_upper = (upper_inclusive and upper_est > upper) or (not upper_inclusive and upper_est >= upper)
+        if violates_upper:
+            message = high_msg or f"{label} distribution exceeds {fmt(upper)}; adjust the inputs to respect physical limits."
+            st.warning(message)
 
 # =============================================================
 # Units and conversions
@@ -808,6 +909,24 @@ with sim_tab:
         curve = None; curve_name = None; curve_ok = True
         use_grv_scale = False; grv_scale_ppf = None; grv_scale_params = {}
         GRV_ppf = None; GRV_ok = True
+        if A_ok:
+            warn_if_out_of_bounds(
+                "Area (A)",
+                A_name,
+                A_params,
+                A_ppf,
+                lower=0.0,
+                low_msg="Area distribution extends below 0; negative areas are not physical.",
+            )
+        if h_ok:
+            warn_if_out_of_bounds(
+                "Gross Thickness (h)",
+                h_name,
+                h_params,
+                h_ppf,
+                lower=0.0,
+                low_msg="Gross thickness distribution extends below 0; negative thickness is not physical.",
+            )
 
     elif grv_source == "Direct GRV distribution (m³)":
         st.subheader("GRV Mode — Direct GRV distribution")
@@ -819,6 +938,15 @@ with sim_tab:
         use_grv_scale = False; grv_scale_ppf = None; grv_scale_params = {}
         A_ppf = h_ppf = None
         A_ok = h_ok = True
+        if GRV_ok:
+            warn_if_out_of_bounds(
+                "GRV (m³)",
+                GRV_name,
+                GRV_params,
+                GRV_ppf,
+                lower=0.0,
+                low_msg="GRV distribution extends below 0; negative volumes are not physical.",
+            )
 
     else:
         st.subheader("Curve Mode — Upload a single Area–Depth curve")
@@ -869,26 +997,99 @@ with sim_tab:
         _, grv_scale_ppf, grv_scale_name, grv_scale_params, grv_scale_ok, grv_scale_fig = dist_editor(
             "GRV scale factor (multiplier)", 4, {"median": 1.0, "sigma_ln": 0.2}, units_label="×"
         )
+        if grv_scale_ok:
+            warn_if_out_of_bounds(
+                "GRV scale factor",
+                grv_scale_name,
+                grv_scale_params,
+                grv_scale_ppf,
+                lower=0.0,
+                low_msg="GRV scale factor distribution extends below 0; negative multipliers invert volumes and are not allowed.",
+            )
     else:
         grv_scale_ppf = None; grv_scale_params = {}; grv_scale_ok = True; grv_scale_fig = None
 
     # --------- Other input dists ----------
     st.subheader("Other Input Distributions")
     NTG_dist, NTG_ppf, NTG_name, NTG_params, NTG_ok, NTG_fig = dist_editor("Net-to-Gross (NTG, fraction)", 2, {"min": 0.2, "mode": 0.5, "max": 0.8}, units_label="fraction")
+    if NTG_ok:
+        warn_if_out_of_bounds(
+            "Net-to-gross (NTG)",
+            NTG_name,
+            NTG_params,
+            NTG_ppf,
+            lower=0.0,
+            upper=1.0,
+            low_msg="Net-to-gross distribution drops below 0; sampled NTG values below 0 will be clipped to 0.",
+            high_msg="Net-to-gross distribution extends above 1; sampled NTG values above 1 will be clipped to 1. Adjust the input if that is unintended.",
+        )
+
     phi_dist, phi_ppf, phi_name, phi_params, phi_ok, phi_fig = dist_editor("Porosity (phi, fraction)", 2, {"min": 0.12, "mode": 0.18, "max": 0.26}, units_label="fraction")
+    if phi_ok:
+        warn_if_out_of_bounds(
+            "Porosity (phi)",
+            phi_name,
+            phi_params,
+            phi_ppf,
+            lower=0.0,
+            upper=0.47,
+            low_msg="Porosity distribution drops below 0; porosity is non-negative.",
+            high_msg="Porosity distribution exceeds 0.47; confirm this is intended for the reservoir rock.",
+        )
     Sw_dist, Sw_ppf, Sw_name, Sw_params, Sw_ok, Sw_fig = dist_editor("Water Saturation (Sw, fraction)", 2, {"min": 0.15, "mode": 0.25, "max": 0.4}, units_label="fraction")
+    if Sw_ok:
+        warn_if_out_of_bounds(
+            "Water Saturation (Sw)",
+            Sw_name,
+            Sw_params,
+            Sw_ppf,
+            lower=0.0,
+            lower_inclusive=False,
+            upper=1.0,
+            low_msg="Water saturation distribution reaches zero or negative values; adjust inputs so Sw stays above connate saturation.",
+            high_msg="Water saturation distribution exceeds 1; verify the saturation inputs.",
+        )
 
     if fluid == "Oil":
         Bo_dist, Bo_ppf, Bo_name, Bo_params, Bo_ok, Bo_fig = dist_editor("Oil FVF (Bo, rm³/stb)", 3, {"mean": 1.25, "sd": 0.1, "min": 1.05, "max": 1.5}, units_label="rm³/stb")
+        if Bo_ok:
+            warn_if_out_of_bounds(
+                "Oil FVF (Bo)",
+                Bo_name,
+                Bo_params,
+                Bo_ppf,
+                lower=0.0,
+                lower_inclusive=False,
+                low_msg="Oil formation volume factor distribution includes non-positive values; Bo must be greater than 0.",
+            )
         Bg_ppf = None; Bg_ok = True; Bg_fig = None
     else:
         Bg_dist, Bg_ppf, Bg_name, Bg_params, Bg_ok, Bg_fig = dist_editor("Gas FVF (Bg, rm³/scf)", 3, {"mean": 0.004, "sd": 0.0004, "min": 0.003, "max": 0.0055}, units_label="rm³/scf")
+        if Bg_ok:
+            warn_if_out_of_bounds(
+                "Gas FVF (Bg)",
+                Bg_name,
+                Bg_params,
+                Bg_ppf,
+                lower=0.0,
+                lower_inclusive=False,
+                low_msg="Gas formation volume factor distribution includes non-positive values; Bg must be greater than 0.",
+            )
         Bo_ppf = None; Bo_ok = True; Bo_fig = None
 
     # Optional RF
     include_rf = st.checkbox("Include Recovery Factor (compute recoverable volumes)", value=True, key="include_rf")
     if include_rf:
         RF_dist, RF_ppf, RF_name, RF_params, RF_ok, RF_fig = dist_editor("Recovery Factor (RF, fraction)", 4, {"median": 0.25, "sigma_ln": 0.3}, units_label="fraction")
+        if RF_ok:
+            warn_if_out_of_bounds(
+                "Recovery Factor (RF)",
+                RF_name,
+                RF_params,
+                RF_ppf,
+                lower=0.0,
+                low_msg="Recovery factor distribution extends below 0; sampled RF values below 0 will be clipped to 0.",
+            )
     else:
         RF_ppf = None; RF_ok = True; RF_fig = None; RF_name = "—"; RF_params = {}
 
@@ -897,12 +1098,30 @@ with sim_tab:
         include_rs = st.checkbox("Include Solution GOR (Rs) to compute solution gas initially in place", value=False, key="include_rs")
         if include_rs:
             Rs_dist, Rs_ppf, Rs_name, Rs_params, Rs_ok, Rs_fig = dist_editor("Solution GOR (Rs, scf/stb)", 3, {"mean": 500.0, "sd": 100.0, "min": 0.0, "max": 3000.0}, units_label="scf/stb")
+            if Rs_ok:
+                warn_if_out_of_bounds(
+                    "Solution GOR (Rs)",
+                    Rs_name,
+                    Rs_params,
+                    Rs_ppf,
+                    lower=0.0,
+                    low_msg="Solution GOR distribution extends below 0; negative gas-oil ratios are not physical.",
+                )
         else:
             Rs_ppf=None; Rs_ok=True; Rs_fig=None; Rs_name="—"; Rs_params={}
     else:
         include_cgr = st.checkbox("Include Condensate Yield (CGR) to compute condensate initially in place", value=False, key="include_cgr")
         if include_cgr:
             CGR_dist, CGR_ppf, CGR_name, CGR_params, CGR_ok, CGR_fig = dist_editor("Condensate Yield (CGR, STB/MMscf)", 3, {"mean": 50.0, "sd": 20.0, "min": 0.0, "max": 500.0}, units_label="STB/MMscf")
+            if CGR_ok:
+                warn_if_out_of_bounds(
+                    "Condensate Yield (CGR)",
+                    CGR_name,
+                    CGR_params,
+                    CGR_ppf,
+                    lower=0.0,
+                    low_msg="Condensate yield distribution extends below 0; negative CGR values are not physical.",
+                )
         else:
             CGR_ppf=None; CGR_ok=True; CGR_fig=None; CGR_name="—"; CGR_params={}
 
@@ -1576,75 +1795,168 @@ with help_tab:
     st.header("User Guide")
     st.markdown(
         r"""
-### What this app does
-Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workflows, optional **GRV scaling**, dependencies between inputs, optional **RF**, and multi‑phase add‑ons (**Rs → Solution gas** in oil systems; **CGR → Condensate** in gas systems). Charts (Histogram, CDF, Heatmap, Tornado) and the results table react to your selections.
+### Overview
+This application performs Monte Carlo volumetric assessments for subsurface reservoirs. It brings together three GRV workflows, rich input distributions, optional recovery/secondary products, and dependency-aware sampling so you can explore uncertainty and sensitivities in one place. Everything you configure in the Simulator tab updates the visual analytics and the downloadable report.
 
 ---
-### Quick start
-1) **Pick fluid system** in the sidebar (Oil or Gas) and set **units** and **iterations**.
-2) **Choose GRV source** under *GRV Source*:
-   - **Uncertain Area × Gross thickness** — provide distributions for **A** and **h**.
-   - **Upload Area–Depth curve** — upload a CSV/XLSX with two columns: `depth` and `area`. Use the unit selectors next to the uploader. The app integrates area over depth to compute GRV.
-   - **Direct GRV distribution (m³)** — provide a distribution for GRV in m³.
-3) (Optional) **Apply GRV scale factor** — a multiplicative “fudge factor” on GRV. If scaling is used, *sensitivity charts treat geometry as a single GRV input* (see Notes below).
-4) Define **Other inputs**: NTG, phi, Sw, and **Bo** (Oil) or **Bg** (Gas). Use any supported distribution (Uniform, Triangular, PERT, Normal (optional bounds), Lognormal (optional bounds), Beta, Custom P10/P50/P90, Discrete).
-5) (Optional) **Recovery Factor (RF)** — enable to compute reserves/recoverable volumes.
-6) (Optional multi‑phase)**:**
-   - **Oil**: enable **Rs (scf/stb)** to compute **SGIIP**.
-   - **Gas**: enable **CGR (STB/MMscf)** to compute **Condensate in place**.
-7) (Optional) **Dependencies** — toggle *Enable dependencies* and add only the pairs you want. Unlisted pairs default to 0.00.
-8) Click **Run Monte Carlo**.
-9) Choose the **Target output** (drop‑down) to drive charts and the tornado baseline (P50 of the selected output).
+### How It Works
+1. **Configure the study** in the sidebar: set iterations, random seed, fluid system, and unit conventions.
+2. **Select a GRV workflow** (area × thickness, uploaded area–depth curve, or a direct GRV distribution). Optionally apply a GRV scale factor to all modes.
+3. **Describe subsurface properties** by picking distributions for NTG, porosity, water saturation, and fluid formation volume factors. Add recovery factor or multi-phase add-ons (solution gas `Rs`, condensate yield `CGR`) as needed.
+4. **Optionally define dependencies** between inputs. A Gaussian copula embeds your declared correlations into the sampling space.
+5. **Run the Monte Carlo**. Latin Hypercube Sampling (LHS) generates stratified draws across the high-dimensional joint distribution, preserving the correlation structure from the copula.
+6. **Review the outputs**: histograms, CDFs, heat maps, tornado sensitivities, and summary tables adapt to your selected output unit. Export samples and an HTML report when you are satisfied.
 
 ---
-### Inputs & units
-- **Area units:** m², km², acres.  
-- **Thickness units:** m, ft.  
-- **Oil outputs units:** m³ / Mm³ / MMm³ or stb / Mstb / MMstb (conversion from 1 m³ = 6.2898 stb).  
-- **Gas outputs units:** m³ / Mm³ / MMm³ or scf / MMscf / Bscf / Tscf (conversion from 1 m³ = 35.3147 scf).  
-- **Curve file format:** CSV or Excel with columns named like `depth`, `area` (case‑insensitive). Select curve units next to the uploader. The app displays the uploaded curve and reports the integrated GRV over its full depth range.
+### What You Can Do
+- Test scenarios by mixing and matching GRV sources with or without scale multipliers.
+- Quantify uncertainty across STOIIP / GIIP, reserves, solution gas, or condensate volumes.
+- Explore which inputs move the P50 most via the tornado chart.
+- Share findings through ready-to-download CSV samples and a self-contained HTML report.
 
 ---
-### Dependency editor (correlations)
-- Only pairs you add are applied; others remain **0.00** by default.  
-- Each row: **Var i**, **Var j**, **rho** (−0.999…+0.999).  
-- The editor checks for **conflicting duplicates** of the same pair and warns.  
-- The correlation matrix is adjusted to the nearest positive‑semidefinite matrix before sampling.  
-- Your rows persist via session state while the app remains open.
+### Distribution Library (with references)
+- **Uniform (random)** — equal likelihood between `min` and `max`. Useful when only bounds are known. [Read more](https://en.wikipedia.org/wiki/Continuous_uniform_distribution)
+- **Triangular** — linear up/down between `min`, `mode`, and `max`; captures simple expert estimates. [Read more](https://en.wikipedia.org/wiki/Triangular_distribution)
+- **PERT** — smooths a triangular estimate into a beta curve controlled by `lambda`. Ideal for elicited min/mode/max inputs. [Read more](https://en.wikipedia.org/wiki/PERT_distribution)
+- **Normal** — Gaussian with optional truncation; use when symmetric uncertainty around a mean is appropriate. [Read more](https://en.wikipedia.org/wiki/Normal_distribution)
+- **Lognormal** — positive skewed distribution defined by median and log-space sigma; optional bounds avoid extreme tails. [Read more](https://en.wikipedia.org/wiki/Log-normal_distribution)
+- **Beta** — bounded on `[min, max]`, flexible for fractions such as NTG, porosity, or Sw. [Read more](https://en.wikipedia.org/wiki/Beta_distribution)
+- **Custom (P10/P50/P90)** — back-calculates parameters for Normal, Lognormal, or Beta families from exceedance-style quantiles (P90 low, P10 high). [Read more](https://en.wikipedia.org/wiki/Quantile)
+- **Discrete** — finite scenarios with explicit weights; use for structured cases or deterministic options. [Read more](https://en.wikipedia.org/wiki/Probability_mass_function)
+
+Each expander in the Simulator tab previews the probability density (or PMF) so you can validate shapes before running.
 
 ---
-### Calculations
-- **HC pore volume (reservoir m³)** = GRV × NTG × phi × (1 − Sw).  
-- **Oil system**:  
-  - **STOIIP** (std conditions) = HCPV / Bo.  
-  - **SGIIP** (scf) = STOIIP(stb) × Rs.  
-  - **Reserves** (if RF enabled) = STOIIP × RF.  
-- **Gas system**:  
-  - **GIIP** (std conditions) = HCPV / Bg.  
-  - **Condensate in place** (STB) = GIIP(scf)/1e6 × CGR.  
-  - **Recoverable gas** (if RF enabled) = GIIP × RF.
+### Sampling & Dependencies
+- **Latin Hypercube Sampling (LHS)** stratifies each marginal distribution into equal-probability bins and samples once per bin, dramatically improving coverage relative to naïve Monte Carlo for the same iteration count. [Read more](https://en.wikipedia.org/wiki/Latin_hypercube_sampling)
+- **Gaussian Copula** — user-defined correlations are assembled into a covariance matrix and adjusted to the nearest positive semi-definite matrix. Multivariate normal samples are drawn, correlated via a Cholesky factor, transformed to uniform space, and finally mapped through each variable’s inverse CDF (PPF). This preserves your rank correlations while honoring the individual distribution shapes. [Read more](https://en.wikipedia.org/wiki/Copula_(probability_theory))
+- **Dependency editor** — add only the pairs you need. Unspecified pairs default to zero correlation. Conflicts are flagged, and session state remembers your entries until you reset them.
+        """
+    )
+
+    st.subheader("Visual Guide: Sampling & Dependencies")
+    st.caption("Quick visual intuition for the sampling engine that powers the simulator.")
+
+    # --- Latin Hypercube vs. Plain Monte Carlo ---
+    st.markdown("#### Latin Hypercube Sampling vs Random Sampling")
+    st.write(
+        "The charts contrast 200 random draws from the unit square with Latin Hypercube Sampling "
+        "(LHS). LHS forces one sample per stratified bin along each axis, providing better coverage "
+        "for the same number of samples."
+    )
+
+    rng_vis = np.random.default_rng(12345)
+    n_vis = 200
+    random_samples = pd.DataFrame(rng_vis.random((n_vis, 2)), columns=["u1", "u2"])
+    lhs_samples = pd.DataFrame(latin_hypercube(n_vis, 2, rng_vis), columns=["u1", "u2"])
+
+    random_fig = px.scatter(random_samples, x="u1", y="u2", title="Random Monte Carlo")
+    random_fig.update_traces(marker=dict(size=7, opacity=0.7, color="#1f77b4"))
+    random_fig.update_layout(xaxis_title="Unit sample 1", yaxis_title="Unit sample 2")
+
+    lhs_fig = px.scatter(lhs_samples, x="u1", y="u2", title="Latin Hypercube Sampling")
+    lhs_fig.update_traces(marker=dict(size=7, opacity=0.7, color="#d62728"))
+    lhs_fig.update_layout(xaxis_title="Unit sample 1", yaxis_title="Unit sample 2")
+
+    cols_lhs = st.columns(2)
+    with cols_lhs[0]:
+        st.plotly_chart(random_fig, use_container_width=True)
+    with cols_lhs[1]:
+        st.plotly_chart(lhs_fig, use_container_width=True)
+
+    st.caption(
+        "LHS guarantees one point per row and column strata (visualized by the uniform spread), "
+        "reducing clustering and improving convergence for multidimensional problems."
+    )
+
+    # --- Gaussian Copula Illustration ---
+    st.markdown("#### Gaussian Copula: Imposing Correlation")
+    st.write(
+        "The Gaussian copula builds correlations in the latent normal space and maps the samples "
+        "back to the requested marginals. Below we draw two marginals (Normal and Lognormal) with "
+        "and without the copula correlation."
+    )
+
+    norm_dist = stt.norm(loc=50.0, scale=10.0)
+    logn_dist = stt.lognorm(s=0.4, scale=np.exp(np.log(2.5)))
+
+    def _norm_ppf(u):
+        return norm_dist.ppf(u)
+
+    def _logn_ppf(u):
+        return logn_dist.ppf(u)
+
+    indep_u = rng_vis.random((n_vis, 2))
+    indep_samples = pd.DataFrame(
+        {
+            "Variable A": _norm_ppf(indep_u[:, 0]),
+            "Variable B": _logn_ppf(indep_u[:, 1]),
+        }
+    )
+
+    target_corr = np.array([[1.0, 0.7], [0.7, 1.0]])
+    copula_samples = gaussian_copula_sample(
+        n_vis,
+        target_corr,
+        [_norm_ppf, _logn_ppf],
+        rng_vis,
+    )
+    copula_df = pd.DataFrame(copula_samples, columns=["Variable A", "Variable B"])
+
+    indep_fig = px.scatter(
+        indep_samples,
+        x="Variable A",
+        y="Variable B",
+        title="Independent Marginals",
+    )
+    indep_fig.update_traces(marker=dict(size=7, opacity=0.7, color="#1f77b4"))
+
+    copula_fig = px.scatter(
+        copula_df,
+        x="Variable A",
+        y="Variable B",
+        title="Gaussian Copula (ρ = 0.7)",
+    )
+    copula_fig.update_traces(marker=dict(size=7, opacity=0.7, color="#ff7f0e"))
+
+    cols_cop = st.columns(2)
+    with cols_cop[0]:
+        st.plotly_chart(indep_fig, use_container_width=True)
+    with cols_cop[1]:
+        st.plotly_chart(copula_fig, use_container_width=True)
+
+    corr_value = copula_df.corr(method="spearman").iloc[0, 1]
+    st.caption(
+        f"Spearman correlation after the copula transform ≈ {corr_value:.2f}, matching the intended dependency "
+        "while preserving each marginal's shape."
+    )
+
+    st.markdown(
+        r"""
+---
+### Outputs & Interpretation
+- **Histograms & CDFs** show the distribution of the active output with P10/P50/P90 markers (exceedance convention: P90 is low, P10 is high).
+- **Spearman heat map** focuses on how each input ranks against the target output. When dependencies are disabled, it simplifies to an input-vs-output column; when enabled, the full matrix is displayed.
+- **Tornado chart** reports the percentage change in P50 when each input is set to its P10 or P90 value (other variables remain sampled). Geometry inputs collapse into a single GRV bar when the scale factor is enabled to avoid double counting.
+- **Results table** summarizes P10/P50/P90 and mean for every computed output (STOIIP/GIIP, reserves/recoverable, solution gas, condensate) using the units selected in the sidebar.
 
 ---
-### Charts & tables
-- **Target selector** drives:
-  - **Histogram** and **CDF** (annotated with P10/P50/P90 — *exceedance convention*: P90 low, P10 high).  
-  - **Correlation heatmap**: Spearman correlation of inputs vs the selected output.  
-  - **Tornado**: Shows ΔP50 when each input is set to its P10/P90.  
-- **GRV scaling behavior in charts**  
-  - If **GRV scaling is OFF** and you used **A × h**, the heatmap and tornado show **A** and **h** separately.  
-  - If **GRV scaling is ON** (any GRV method), geometry sensitivity is aggregated under **GRV**; **A** and **h** bars are hidden to avoid double‑counting.  
-- **Results table** reports P10/P50/P90/Mean for all computed outputs relevant to your selections.  
-- **CSV download** includes all sampled inputs plus computed outputs; additional scaled columns matching the table are appended for convenience.
+### Downloads & Reporting
+- **CSV** contains every sampled input (post unit conversion) plus calculated outputs and unit-scaled columns that mirror the results table.
+- **HTML report** embeds the charts you saw on screen along with the summary table so stakeholders can review without needing Streamlit.
+- Both files are packaged into a single ZIP to avoid regenerating simulations when downloading.
 
 ---
-### Tips
-- Clip fractions (NTG, phi, Sw, RF) are automatically bounded to [0, 1].  
-- Use **Custom (P10/P50/P90)** when eliciting inputs in exceedance terms (P10 high, P90 low).  
-- For highly skewed parameters, prefer **Lognormal** (optionally truncated with bounds).
+### Tips & Good Practices
+- Fractional inputs (NTG, phi, Sw, RF) are clipped to the physical [0, 1] interval after sampling.
+- Use truncated normals or lognormals when bounds are known to prevent unrealistic extremes.
+- When eliciting expert ranges, the PERT or Custom quantile options often provide more realistic tails than a triangular distribution.
+- Re-run with different seeds to confirm stability of summary statistics if you work with smaller iteration counts.
 
 ---
-### Version & contact
-- **App version:** {1.1.5}
-- **Contact the project maintainers via email for support.**
+### Version & Support
+- **App version:** {1.2.0}
+- **Questions or feedback?** Use the sidebar email link to reach the maintainers.
         """
     )
