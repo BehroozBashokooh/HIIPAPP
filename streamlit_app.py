@@ -17,6 +17,41 @@ APP_NAME = "HIIP APP, Hurrah!"
 APP_VER = "v1.1.5"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
+# Inject custom styles once for the volumetric formula block
+if "_vol_formula_style" not in st.session_state:
+    st.markdown(
+        """
+        <style>
+        .volumetric-formula {
+            border-left: 4px solid #4c8bf5;
+            background-color: rgba(76, 139, 245, 0.08);
+            padding: 0.75rem 1rem;
+            margin: 0 0 1rem 0;
+            font-size: 0.95rem;
+            line-height: 1.55;
+            border-radius: 0 6px 6px 0;
+        }
+        .volumetric-formula .label {
+            font-weight: 600;
+            color: #1f2933;
+        }
+        .volumetric-formula .optional {
+            font-weight: 600;
+            color: #0f4c81;
+        }
+        .volumetric-formula .math-symbol {
+            font-family: "Menlo", "DejaVu Sans Mono", monospace;
+            font-size: 0.9rem;
+            margin: 0 0.05rem;
+        }
+        .volumetric-formula sub { font-size: 0.8em; }
+        .volumetric-formula sup { font-size: 0.8em; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.session_state["_vol_formula_style"] = True
+
 # =============================================================
 # Input helpers
 # =============================================================
@@ -481,6 +516,23 @@ sim_tab, help_tab = st.tabs(["Simulator", "Help / User Guide"])
 with sim_tab:
     st.title("Reservoir in-place volumes")
     st.caption(" Monte Carlo with dependencies (LHS + Gaussian copula)")
+
+    if fluid == "Oil":
+        volumetric_formula = """
+        <div class="volumetric-formula">
+            <p><span class="label">STOIIP</span> = (GRV × NTG × &phi; × (1 − S<sub>w</sub>)) ÷ B<sub>o</sub></p>
+            <p><span class="optional">* Reserves</span> = STOIIP × RF,&nbsp; <span class="optional">* SGIIP</span> = STOIIP<sub>STB</sub> × R<sub>s</sub></p>
+        </div>
+        """
+    else:
+        volumetric_formula = """
+        <div class="volumetric-formula">
+            <p><span class="label">GIIP</span> = (GRV × NTG × &phi; × (1 − S<sub>w</sub>)) ÷ B<sub>g</sub></p>
+            <p><span class="optional">* Recoverable</span> = GIIP × RF,&nbsp; <span class="optional">* Condensate IP</span> = GIIP<sub>scf</sub> ÷ 10<sup>6</sup> × CGR</p>
+        </div>
+        """
+
+    st.markdown(volumetric_formula, unsafe_allow_html=True)
 
     st.subheader("GRV Source")
     grv_source = st.radio(
