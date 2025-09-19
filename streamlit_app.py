@@ -14,7 +14,7 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.1.5"
+APP_VER = "v1.2.0"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # Inject custom styles once for the volumetric formula block
@@ -1060,6 +1060,29 @@ with sim_tab:
         st.session_state._dep_vars = []
         st.session_state._has_deps = False
 
+    # Consolidated input distribution grid (optional toggle once inputs validate)
+    input_fig_items = list(input_figs.items())
+    if inputs_ok and input_fig_items:
+        st.subheader("Input distributions overview")
+        st.caption("Toggle to preview every configured input distribution in a compact grid.")
+        show_input_grid = st.checkbox(
+            "Show all input distributions",
+            value=st.session_state.get("_show_input_grid", False),
+            key="show_input_grid",
+        )
+        st.session_state["_show_input_grid"] = show_input_grid
+        if show_input_grid:
+            cols_per_row = 3 if len(input_fig_items) >= 3 else len(input_fig_items)
+            for start in range(0, len(input_fig_items), cols_per_row):
+                row_items = input_fig_items[start:start + cols_per_row]
+                columns = st.columns(len(row_items))
+                for column, (label, fig) in zip(columns, row_items):
+                    with column:
+                        st.markdown(f"**{label}**")
+                        fig_copy = go.Figure(fig)
+                        fig_copy.update_layout(height=260, margin=dict(l=10, r=10, t=40, b=10))
+                        st.plotly_chart(fig_copy, use_container_width=True, config={"displayModeBar": False})
+
     st.divider()
 
     # =========================
@@ -1608,7 +1631,7 @@ Monte‑Carlo simulator for subsurface volumetrics. It supports three GRV workfl
 
 ---
 ### Version & contact
-- **App version:** {1.1.5}
+- **App version:** {1.2.0}
 - **Contact the project maintainers via email for support.**
         """
     )
