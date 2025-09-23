@@ -14,7 +14,7 @@ import io, zipfile
 # Config
 # =============================================================
 APP_NAME = "HIIP APP, Hurrah!"
-APP_VER = "v1.2.0"
+APP_VER = "v2.0.0"
 st.set_page_config(page_title=f"{APP_NAME} — {APP_VER}", layout="centered")
 
 # Inject custom styles once for the volumetric formula block
@@ -500,6 +500,25 @@ def integrate_grv_m3(depth_m, area_m2, z_top_m, z_base_m):
         a[-1] = np.interp(z1, depth_m, area_m2); z[-1] = z1
     return float(np.trapz(a, x=z))
 
+
+def build_cum_grv_interpolator(depth_m, area_m2):
+    """Return an interpolator f(zq) giving GRV from depth_m[0] up to zq (in m³).
+    depth_m must be ascending and same length as area_m2.
+    """
+    z = np.asarray(depth_m, dtype=float)
+    a = np.asarray(area_m2, dtype=float)
+    if len(z) < 2:
+        return lambda zq: np.zeros_like(np.asarray(zq, dtype=float))
+    dz = np.diff(z)
+    seg = 0.5 * (a[:-1] + a[1:]) * dz
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+
+    def interp(zq):
+        zq = np.asarray(zq, dtype=float)
+        return np.interp(zq, z, cum)
+
+    return interp
+
 # =============================================================
 # Business logic
 # =============================================================
@@ -609,6 +628,7 @@ with st.sidebar:
 
     st.divider()
 st.sidebar.markdown("[Click here to send questions or comments](mailto:behrooz.bashokooh@shell.com)")
+st.sidebar.caption("Enjoying the app? [Buy me a coffee](https://buymeacoffee.com/behroozbashokooh)")
 # =============================================================
 # Tabs
 # =============================================================
@@ -634,6 +654,7 @@ with sim_tab:
         """
 
     st.markdown(volumetric_formula, unsafe_allow_html=True)
+    st.caption("When fluid-contact uncertainty is enabled, GRV is computed up to the sampled contact (OWC/GWC) in Curve mode, or via derived column/fill fraction in A×h/Direct-GRV modes.")
 
     st.subheader("GRV Source")
     grv_source = st.radio(
@@ -654,6 +675,19 @@ with sim_tab:
     curve_preview_fig = None
     A_fig = h_fig = NTG_fig = phi_fig = Sw_fig = Bo_fig = Bg_fig = RF_fig = grv_scale_fig = GRV_fig = None
     Rs_fig = CGR_fig = None
+
+    # Defaults for optional contact modelling artifacts
+    model_contact_Ah = False
+    Ah_contact_mode = None
+    Ztop_ppf = None; Ztop_ok = True; Ztop_fig = None; Ztop_params = {}
+    Zc_Ah_ppf = None; Zc_Ah_ok = True; Zc_Ah_fig = None; Zc_Ah_params = {}
+    ffill_ppf = None; ffill_ok = True; ffill_fig = None; ffill_params = {}
+
+    model_contact_direct = False
+    ffill_dir_ppf = None; ffill_dir_ok = True; ffill_dir_fig = None; ffill_dir_params = {}
+
+    model_contact_curve = False
+    Zc_ppf = None; Zc_ok = True; Zc_fig = None; Zc_params = {}; Zc_name = "—"
 
     # ---------- common dist editor ----------
     def dist_editor(label, dist_default, param_defaults, help_text=None, units_label=""):
@@ -904,8 +938,8 @@ with sim_tab:
     # ---------- Inputs depending on GRV mode ----------
     if grv_source == "Uncertain Area × Gross thickness":
         st.subheader("Input Distributions — Area × h")
-        A_dist, A_ppf, A_name, A_params, A_ok, A_fig = dist_editor("Area (A)", 1, {"min": 5.0, "mode": 10.0, "max": 20.0}, units_label=u_area)
-        h_dist, h_ppf, h_name, h_params, h_ok, h_fig = dist_editor("Gross Thickness (h)", 1, {"min": 10.0, "mode": 20.0, "max": 40.0}, units_label=u_thick)
+        A_dist, A_ppf, A_name, A_params, A_ok, A_fig = dist_editor("Area (A)", 1, {"min": 30.0, "mode": 45.0, "max": 60.0}, units_label=u_area)
+        h_ppf = None; h_ok = True; h_name = "—"; h_params = {}; h_fig = None
         curve = None; curve_name = None; curve_ok = True
         use_grv_scale = False; grv_scale_ppf = None; grv_scale_params = {}
         GRV_ppf = None; GRV_ok = True
@@ -918,7 +952,33 @@ with sim_tab:
                 lower=0.0,
                 low_msg="Area distribution extends below 0; negative areas are not physical.",
             )
-        if h_ok:
+
+        model_contact_Ah = st.checkbox("Model fluid contact uncertainty (A×h)", value=False, key="model_contact_Ah")
+        if model_contact_Ah:
+            Ah_contact_mode = st.radio(
+                "How to model contact in A×h?",
+                ["Top+Contact depths → derive column", "Fill fraction multiplier (0–1)"],
+                index=0, key="Ah_contact_mode",
+            )
+            if Ah_contact_mode == "Top+Contact depths → derive column":
+                Ztop_dist, Ztop_ppf, Ztop_name, Ztop_params, Ztop_ok, Ztop_fig = dist_editor(
+                    "Top depth", 1, {"min": 1500.0, "mode": 1600.0, "max": 1700.0}, units_label=u_thick,
+                )
+                st.caption("Enter depths as positive values increasing downward (e.g., 0 at datum).")
+                Zc_Ah_dist, Zc_Ah_ppf, Zc_Ah_name, Zc_Ah_params, Zc_Ah_ok, Zc_Ah_fig = dist_editor(
+                    ("OWC depth" if fluid == "Oil" else "GWC depth"), 1,
+                    {"min": 1750.0, "mode": 1850.0, "max": 1950.0}, units_label=u_thick,
+                )
+                st.caption("Enter depths as positive values increasing downward (e.g., 0 at datum).")
+            else:
+                ffill_dist, ffill_ppf, ffill_name, ffill_params, ffill_ok, ffill_fig = dist_editor(
+                    "Fill fraction due to contact (0–1)", 4, {"median": 0.8, "sigma_ln": 0.25}, units_label="fraction",
+                )
+                h_dist, h_ppf, h_name, h_params, h_ok, h_fig = dist_editor("Gross Thickness (h)", 1, {"min": 30.0, "mode": 40.0, "max": 50.0}, units_label=u_thick)
+        else:
+            h_dist, h_ppf, h_name, h_params, h_ok, h_fig = dist_editor("Gross Thickness (h)", 1, {"min": 30.0, "mode": 40.0, "max": 50.0}, units_label=u_thick)
+
+        if h_ppf is not None and h_ok:
             warn_if_out_of_bounds(
                 "Gross Thickness (h)",
                 h_name,
@@ -948,6 +1008,12 @@ with sim_tab:
                 low_msg="GRV distribution extends below 0; negative volumes are not physical.",
             )
 
+        model_contact_direct = st.checkbox("Model fluid contact as fill factor (0–1)", value=False, key="model_contact_direct")
+        if model_contact_direct:
+            ffill_dir_dist, ffill_dir_ppf, ffill_dir_name, ffill_dir_params, ffill_dir_ok, ffill_dir_fig = dist_editor(
+                "Fill fraction due to contact (0–1)", 4, {"median": 0.85, "sigma_ln": 0.2}, units_label="fraction",
+            )
+
     else:
         st.subheader("Curve Mode — Upload a single Area–Depth curve")
         st.markdown(
@@ -967,6 +1033,8 @@ with sim_tab:
             curve_area_units = st.selectbox("Curve area units", list(AREA_UNITS.keys()), index=list(AREA_UNITS.keys()).index(u_area), key="curve_area_units")
 
         curve = None; curve_name = None; curve_ok = False
+        model_contact_curve = False
+        Zc_ppf = None; Zc_ok = True; Zc_fig = None; Zc_params = {}; Zc_name = "—"
         try:
             if curve_file is not None:
                 dfc = _normalize_columns(_read_table(curve_file))
@@ -982,6 +1050,33 @@ with sim_tab:
                 st.plotly_chart(curve_preview_fig, use_container_width=True)
                 base_grv_m3 = integrate_grv_m3(curve[:,0], curve[:,1], float(curve[:,0].min()), float(curve[:,0].max()))
                 st.markdown(f"**Base GRV from curve (full depth range):** {base_grv_m3:,.0f} m³  &nbsp; | &nbsp; {base_grv_m3/1e6:,.3f} MMm³")
+
+                # Fluid contact uncertainty (Curve mode)
+                st.subheader("Fluid contact (optional)")
+                model_contact_curve = st.checkbox(
+                    "Model fluid contact uncertainty (integrate A–z down to contact)",
+                    value=False,
+                    key="model_contact_curve",
+                )
+                if model_contact_curve:
+                    contact_label = "Oil–Water Contact (OWC) depth" if fluid == "Oil" else "Gas–Water Contact (GWC) depth"
+                    zmin_curve = float(dfc["depth"].min())
+                    zmax_curve = float(dfc["depth"].max())
+                    zmid_curve = 0.5 * (zmin_curve + zmax_curve)
+                    Zc_dist, Zc_ppf, Zc_name, Zc_params, Zc_ok, Zc_fig = dist_editor(
+                        contact_label,
+                        1,  # Triangular default
+                        {"min": zmin_curve, "mode": zmid_curve, "max": zmax_curve},
+                        units_label=curve_depth_units,
+                    )
+                    st.caption("Enter depths as positive values increasing downward (e.g., 0 at datum). If your curve uses negative TVDSS values below MSL, enter those negative values.")
+                    if Zc_ok and Zc_ppf is not None:
+                        warn_if_out_of_bounds(
+                            contact_label, Zc_name, Zc_params, Zc_ppf,
+                            lower=zmin_curve, upper=zmax_curve,
+                            low_msg=f"{contact_label} is above the uploaded curve range; resulting GRV may be zero.",
+                            high_msg=f"{contact_label} is below the uploaded curve range; resulting GRV may be full structural volume.",
+                        )
         except Exception as e:
             st.error(f"Failed to read curve: {e}")
             curve_ok = False
@@ -1152,6 +1247,20 @@ with sim_tab:
         if fig is not None:
             fig_entries.append((name, fig))
 
+    # Append contact/fill preview figures if present
+    if model_contact_curve and (Zc_fig is not None):
+        fig_entries.append(("Contact depth (curve)", Zc_fig))
+    if model_contact_Ah:
+        if Ah_contact_mode == "Top+Contact depths → derive column":
+            if 'Ztop_fig' in locals() and Ztop_fig is not None:
+                fig_entries.append(("Top depth (A×h)", Ztop_fig))
+            if 'Zc_Ah_fig' in locals() and Zc_Ah_fig is not None:
+                fig_entries.append(("Contact depth (A×h)", Zc_Ah_fig))
+        elif 'ffill_fig' in locals() and ffill_fig is not None:
+            fig_entries.append(("Fill fraction (A×h)", ffill_fig))
+    if model_contact_direct and ('ffill_dir_fig' in locals()) and (ffill_dir_fig is not None):
+        fig_entries.append(("Fill fraction (direct GRV)", ffill_dir_fig))
+
     input_figs = dict(fig_entries)
 
     # =========================
@@ -1161,14 +1270,45 @@ with sim_tab:
 
     # Build the variable list for dependency editor and sampling
     if grv_source == "Uncertain Area × Gross thickness":
-        var_names = ["A", "h", "NTG", "phi", "Sw", ("Bo" if fluid == "Oil" else "Bg")]
-        inputs_ok = all([A_ok, h_ok, NTG_ok, phi_ok, Sw_ok, (Bo_ok if fluid=="Oil" else Bg_ok)])
+        var_names = ["A", "NTG", "phi", "Sw", ("Bo" if fluid == "Oil" else "Bg")]
+        inputs_ok = A_ok and NTG_ok and phi_ok and Sw_ok and (Bo_ok if fluid=="Oil" else Bg_ok)
+        if h_ppf is not None:
+            var_names.insert(1, "h")
+            inputs_ok = inputs_ok and h_ok
+
     elif grv_source == "Direct GRV distribution (m³)":
         var_names = ["GRV_m3", "NTG", "phi", "Sw", ("Bo" if fluid == "Oil" else "Bg")]
         inputs_ok = all([GRV_ok, NTG_ok, phi_ok, Sw_ok, (Bo_ok if fluid=="Oil" else Bg_ok)])
+
     else:  # curve
         var_names = ["NTG", "phi", "Sw", ("Bo" if fluid == "Oil" else "Bg")]
         inputs_ok = all([curve_ok, NTG_ok, phi_ok, Sw_ok, (Bo_ok if fluid=="Oil" else Bg_ok)])
+        if model_contact_curve and Zc_ok and (Zc_ppf is not None):
+            var_names.append("Z_contact_curve")
+            inputs_ok = inputs_ok and Zc_ok and (Zc_ppf is not None)
+
+    if grv_source == "Uncertain Area × Gross thickness" and model_contact_Ah:
+        if Ah_contact_mode == "Top+Contact depths → derive column":
+            if Ztop_ok and Zc_Ah_ok and (Ztop_ppf is not None) and (Zc_Ah_ppf is not None):
+                if "Z_top" not in var_names:
+                    var_names.extend(["Z_top", "Z_contact_Ah"])
+            inputs_ok = inputs_ok and Ztop_ok and Zc_Ah_ok and (Ztop_ppf is not None) and (Zc_Ah_ppf is not None)
+        elif Ah_contact_mode == "Fill fraction multiplier (0–1)":
+            if ffill_ok and (ffill_ppf is not None):
+                if "f_contact" not in var_names:
+                    var_names.append("f_contact")
+            inputs_ok = inputs_ok and ffill_ok and (ffill_ppf is not None)
+            if "h" not in var_names and h_ppf is not None and h_ok:
+                var_names.insert(1, "h")
+                inputs_ok = inputs_ok and h_ok
+        else:
+            inputs_ok = False
+
+    if grv_source == "Direct GRV distribution (m³)" and model_contact_direct:
+        if ffill_dir_ok and (ffill_dir_ppf is not None):
+            if "f_contact_direct" not in var_names:
+                var_names.append("f_contact_direct")
+        inputs_ok = inputs_ok and ffill_dir_ok and (ffill_dir_ppf is not None)
 
     if include_rf:
         var_names.append("RF")
@@ -1328,7 +1468,9 @@ with sim_tab:
         # Build the list of PPFs according to var_names order
         name_to_ppf = {}
         if grv_source == "Uncertain Area × Gross thickness":
-            name_to_ppf.update({"A": A_ppf, "h": h_ppf})
+            name_to_ppf["A"] = A_ppf
+            if "h" in var_names and h_ppf is not None:
+                name_to_ppf["h"] = h_ppf
         elif grv_source == "Direct GRV distribution (m³)":
             name_to_ppf.update({"GRV_m3": GRV_ppf})
         # Common ones
@@ -1346,6 +1488,24 @@ with sim_tab:
             name_to_ppf["CGR"] = CGR_ppf
         if use_grv_scale:
             name_to_ppf["GRV_scale"] = grv_scale_ppf
+
+        # Contact/fill-specific PPFs per mode
+        if grv_source == "Uncertain Area × Gross thickness":
+            if model_contact_Ah:
+                if Ah_contact_mode == "Top+Contact depths → derive column":
+                    if Ztop_ppf is not None:
+                        name_to_ppf["Z_top"] = Ztop_ppf
+                    if Zc_Ah_ppf is not None:
+                        name_to_ppf["Z_contact_Ah"] = Zc_Ah_ppf
+                elif Ah_contact_mode == "Fill fraction multiplier (0–1)":
+                    if ffill_ppf is not None:
+                        name_to_ppf["f_contact"] = ffill_ppf
+        elif grv_source == "Direct GRV distribution (m³)":
+            if model_contact_direct and (ffill_dir_ppf is not None):
+                name_to_ppf["f_contact_direct"] = ffill_dir_ppf
+        else:  # curve
+            if model_contact_curve and (Zc_ppf is not None):
+                name_to_ppf["Z_contact_curve"] = Zc_ppf
 
         ppfs = [name_to_ppf[nm] for nm in var_names]
 
@@ -1367,29 +1527,67 @@ with sim_tab:
 
         # Geometry handling per mode
         if grv_source == "Uncertain Area × Gross thickness":
-            if use_grv_scale and "GRV_scale" in samples.columns:
-                # Collapse geometry into GRV for compute_volumes
-                samples["GRV_m3"] = (samples["A_m2"] * samples["h_m"]) * samples["GRV_scale"]
-            # else: leave A_m2 and h_m for compute_volumes path
+            if model_contact_Ah:
+                if Ah_contact_mode == "Top+Contact depths → derive column" and {"A_m2", "Z_top", "Z_contact_Ah"}.issubset(samples.columns):
+                    z_top_m = samples["Z_top"].astype(float) * THICKNESS_UNITS[u_thick]
+                    z_c_m   = samples["Z_contact_Ah"].astype(float) * THICKNESS_UNITS[u_thick]
+                    h_hc_m = (z_c_m - z_top_m).clip(lower=0.0)
+                    grv_geom = samples["A_m2"] * h_hc_m
+                    if use_grv_scale and "GRV_scale" in samples.columns:
+                        grv_geom = grv_geom * samples["GRV_scale"]
+                    samples["GRV_m3"] = grv_geom
+                elif Ah_contact_mode == "Fill fraction multiplier (0–1)" and {"A_m2", "h_m", "f_contact"}.issubset(samples.columns):
+                    grv_geom = samples["A_m2"] * samples["h_m"] * samples["f_contact"].clip(0.0, 1.0)
+                    if use_grv_scale and "GRV_scale" in samples.columns:
+                        grv_geom = grv_geom * samples["GRV_scale"]
+                    samples["GRV_m3"] = grv_geom
+            else:
+                if use_grv_scale and {"A_m2", "h_m", "GRV_scale"}.issubset(samples.columns):
+                    samples["GRV_m3"] = (samples["A_m2"] * samples["h_m"]) * samples["GRV_scale"]
+                # else: leave A_m2 and h_m for compute_volumes path
 
         elif grv_source == "Direct GRV distribution (m³)":
-            # Already sampled GRV_m3; multiply by scale if requested
-            if use_grv_scale and "GRV_scale" in samples.columns:
-                samples["GRV_m3"] = samples["GRV_m3"] * samples["GRV_scale"]
+            if "GRV_m3" in samples.columns:
+                grv_eff = samples["GRV_m3"].astype(float)
+                if model_contact_direct and "f_contact_direct" in samples.columns:
+                    grv_eff = grv_eff * samples["f_contact_direct"].clip(0.0, 1.0)
+                if use_grv_scale and "GRV_scale" in samples.columns:
+                    grv_eff = grv_eff * samples["GRV_scale"]
+                samples["GRV_m3"] = grv_eff
 
         else:
-            # Curve mode — base GRV is deterministic from full depth range
+            # Curve mode — integrate down to contact if enabled, otherwise full range
             try:
-                base_grv_m3 = integrate_grv_m3(curve[:,0], curve[:,1], float(curve[:,0].min()), float(curve[:,0].max()))
+                if curve is not None:
+                    z_arr = curve[:,0]; a_arr = curve[:,1]
+                    z_top_curve = float(z_arr.min()); z_base_curve = float(z_arr.max())
+                    base_grv_m3 = integrate_grv_m3(z_arr, a_arr, z_top_curve, z_base_curve)
+                    if model_contact_curve and ("Z_contact_curve" in samples.columns):
+                        cum_f = build_cum_grv_interpolator(z_arr, a_arr)
+                        zc_units = THICKNESS_UNITS[curve_depth_units]
+                        zc_m = (samples["Z_contact_curve"].astype(float) * zc_units).clip(z_top_curve, z_base_curve)
+                        grv_contact = cum_f(zc_m) - cum_f(z_top_curve)
+                        grv_eff = grv_contact
+                    else:
+                        grv_eff = float(base_grv_m3)
+                else:
+                    grv_eff = 0.0
             except Exception:
-                base_grv_m3 = 0.0
-            if use_grv_scale and "GRV_scale" in samples.columns:
-                samples["GRV_m3"] = base_grv_m3 * samples["GRV_scale"]
+                grv_eff = 0.0
+            if isinstance(grv_eff, pd.Series) or (hasattr(grv_eff, "shape") and getattr(grv_eff, "shape", [len(samples)])[0] == len(samples)):
+                grv_array = np.asarray(grv_eff, dtype=float)
             else:
-                samples["GRV_m3"] = float(base_grv_m3)
+                grv_array = np.full(len(samples), float(grv_eff), dtype=float)
+            if use_grv_scale and "GRV_scale" in samples.columns:
+                grv_array = grv_array * samples["GRV_scale"].astype(float)
+            samples["GRV_m3"] = grv_array
 
         # Clip fractions
-        for col in ["NTG", "phi", "Sw"] + (["RF"] if include_rf else []):
+        frac_cols = ["NTG", "phi", "Sw"] + (["RF"] if include_rf else [])
+        for col in frac_cols:
+            if col in samples.columns:
+                samples[col] = samples[col].clip(0.0, 1.0)
+        for col in ["f_contact", "f_contact_direct"]:
             if col in samples.columns:
                 samples[col] = samples[col].clip(0.0, 1.0)
 
@@ -1492,6 +1690,12 @@ with sim_tab:
             if "Bg" in var_names and "Bg" not in corr_inputs:
                 corr_inputs.append("Bg")
 
+        for extra in ["GRV_scale", "Z_top", "Z_contact_Ah", "Z_contact_curve", "f_contact", "f_contact_direct"]:
+            if extra in var_names and extra not in corr_inputs:
+                corr_inputs.append(extra)
+
+        curve_units_label = st.session_state.get("curve_depth_units", u_thick)
+
         alias = {
             "A": f"A ({u_area})",
             "h": f"h ({u_thick})",
@@ -1504,6 +1708,12 @@ with sim_tab:
             "RF": "RF (frac)",
             "Rs": "Rs (scf/stb)",
             "CGR": "CGR (STB/MMscf)",
+            "GRV_scale": "GRV scale (×)",
+            "Z_top": f"Top depth ({u_thick})",
+            "Z_contact_Ah": f"Contact depth ({u_thick})",
+            "Z_contact_curve": f"Contact depth ({curve_units_label})",
+            "f_contact": "Fill frac (A×h)",
+            "f_contact_direct": "Fill frac (GRV)",
         }
 
         # Choose base in‑place as target for comparability
@@ -1602,18 +1812,63 @@ with sim_tab:
             else:
                 df[var] = val
 
-            # If using GRV scaling in Area×h mode, keep GRV_m3 consistent when A or h change
-            if (
-                grv_source == "Uncertain Area × Gross thickness" and
-                use_grv_scale and
-                var in ("A", "h") and
-                ("GRV_m3" in df.columns) and ("GRV_scale" in df.columns) and
-                ("A_m2" in df.columns) and ("h_m" in df.columns)
-            ):
-                df["GRV_m3"] = df["A_m2"] * df["h_m"] * df["GRV_scale"]
+            def _apply_geometry(df_in):
+                if grv_source == "Uncertain Area × Gross thickness":
+                    if model_contact_Ah:
+                        if Ah_contact_mode == "Top+Contact depths → derive column" and {"A_m2", "Z_top", "Z_contact_Ah"}.issubset(df_in.columns):
+                            z_top_m = df_in["Z_top"].astype(float) * THICKNESS_UNITS[u_thick]
+                            z_c_m = df_in["Z_contact_Ah"].astype(float) * THICKNESS_UNITS[u_thick]
+                            h_hc_m = (z_c_m - z_top_m).clip(lower=0.0)
+                            grv_geom = df_in["A_m2"] * h_hc_m
+                            if use_grv_scale and "GRV_scale" in df_in.columns:
+                                grv_geom = grv_geom * df_in["GRV_scale"]
+                            df_in["GRV_m3"] = grv_geom
+                        elif Ah_contact_mode == "Fill fraction multiplier (0–1)" and {"A_m2", "h_m", "f_contact"}.issubset(df_in.columns):
+                            grv_geom = df_in["A_m2"] * df_in["h_m"] * df_in["f_contact"].clip(0.0, 1.0)
+                            if use_grv_scale and "GRV_scale" in df_in.columns:
+                                grv_geom = grv_geom * df_in["GRV_scale"]
+                            df_in["GRV_m3"] = grv_geom
+                    else:
+                        if use_grv_scale and {"A_m2", "h_m", "GRV_scale"}.issubset(df_in.columns):
+                            df_in["GRV_m3"] = (df_in["A_m2"] * df_in["h_m"]) * df_in["GRV_scale"]
+                elif grv_source == "Direct GRV distribution (m³)":
+                    if "GRV_m3" in df_in.columns:
+                        grv_eff = df_in["GRV_m3"].astype(float)
+                        if model_contact_direct and "f_contact_direct" in df_in.columns:
+                            grv_eff = grv_eff * df_in["f_contact_direct"].clip(0.0, 1.0)
+                        if use_grv_scale and "GRV_scale" in df_in.columns:
+                            grv_eff = grv_eff * df_in["GRV_scale"]
+                        df_in["GRV_m3"] = grv_eff
+                else:
+                    try:
+                        if curve is not None:
+                            z_arr = curve[:,0]; a_arr = curve[:,1]
+                            z_top_curve = float(z_arr.min()); z_base_curve = float(z_arr.max())
+                            base_grv_m3 = integrate_grv_m3(z_arr, a_arr, z_top_curve, z_base_curve)
+                            if model_contact_curve and ("Z_contact_curve" in df_in.columns):
+                                cum_f = build_cum_grv_interpolator(z_arr, a_arr)
+                                zc_units = THICKNESS_UNITS[curve_depth_units]
+                                zc_m = (df_in["Z_contact_curve"].astype(float) * zc_units).clip(z_top_curve, z_base_curve)
+                                grv_contact = cum_f(zc_m) - cum_f(z_top_curve)
+                                grv_eff = grv_contact
+                            else:
+                                grv_eff = float(base_grv_m3)
+                        else:
+                            grv_eff = 0.0
+                    except Exception:
+                        grv_eff = 0.0
+                    if isinstance(grv_eff, pd.Series) or (hasattr(grv_eff, "shape") and getattr(grv_eff, "shape", [len(df_in)])[0] == len(df_in)):
+                        grv_array = np.asarray(grv_eff, dtype=float)
+                    else:
+                        grv_array = np.full(len(df_in), float(grv_eff), dtype=float)
+                    if use_grv_scale and "GRV_scale" in df_in.columns:
+                        grv_array = grv_array * df_in["GRV_scale"].astype(float)
+                    df_in["GRV_m3"] = grv_array
+
+            _apply_geometry(df)
 
             # keep physical bounds on fractions
-            for c in ["NTG", "phi", "Sw", "RF"]:
+            for c in ["NTG", "phi", "Sw", "RF", "f_contact", "f_contact_direct"]:
                 if c in df.columns:
                     df[c] = df[c].clip(0, 1)
 
@@ -1630,15 +1885,41 @@ with sim_tab:
                     x_scaled_tmp = vols_tmp["GIIP_scf"] * (GAS_UNITS[out_unit] / GAS_UNITS["scf"])
             return float(np.quantile(x_scaled_tmp, 0.50))
 
-        # Variables to test: geometry + NTG + phi + Sw + Bo/Bg (exclude RF, Rs, CGR)
-        if use_grv_scale:
-            base_list = ["GRV_m3", "NTG", "phi", "Sw", "Bo", "Bg"]
-        else:
-            base_list = ["A", "h", "GRV_m3", "NTG", "phi", "Sw", "Bo", "Bg"]
-        sens_vars = [v for v in base_list if v in samples.columns]
+        # Variables to test: include any sampled input that feeds in-place outcomes
+        ordered_vars = [
+            "A", "h", "GRV_m3", "GRV_scale",
+            "NTG", "phi", "Sw",
+            "Bo", "Bg",
+            "Z_top", "Z_contact_Ah", "Z_contact_curve",
+            "f_contact", "f_contact_direct",
+        ]
+        sens_vars = []
+        for v in ordered_vars:
+            if v in samples.columns:
+                # skip vars with no variation to avoid flat tornado bars
+                if np.nanstd(samples[v].astype(float)) <= 0.0:
+                    continue
+                sens_vars.append(v)
 
         grv_unit_label = f"{u_area}×{u_thick}" if use_grv_scale else "m³"
-        _alias = {"GRV_m3": f"GRV ({grv_unit_label})"}
+        curve_units_label = st.session_state.get("curve_depth_units", u_thick)
+
+        _alias = {
+            "A": f"A ({u_area})",
+            "h": f"h ({u_thick})",
+            "GRV_m3": f"GRV ({grv_unit_label})",
+            "GRV_scale": "GRV scale (×)",
+            "NTG": "NTG (frac)",
+            "phi": "Phi (frac)",
+            "Sw": "Sw (frac)",
+            "Bo": "Bo (rm³/stb)",
+            "Bg": "Bg (rm³/scf)",
+            "Z_top": f"Top depth ({u_thick})",
+            "Z_contact_Ah": f"Contact depth ({u_thick})",
+            "Z_contact_curve": f"Contact depth ({curve_units_label})",
+            "f_contact": "Fill fraction (A×h)",
+            "f_contact_direct": "Fill fraction (GRV)",
+        }
 
         # Compute low/high deltas, plus hover fields
         tor_records = []
@@ -1661,35 +1942,41 @@ with sim_tab:
             })
 
         df_tor = pd.DataFrame(tor_records)
-        # Sort by impact descending and fix y-category order so largest appears on top
-        df_tor = df_tor.sort_values("Impact", ascending=False).reset_index(drop=True)
+        df_tor = df_tor.dropna(subset=["Impact"])
+        df_tor = df_tor[~np.isclose(df_tor["Impact"], 0.0)]
 
-        # Build customdata for rich hover per trace
-        low_custom  = np.column_stack([df_tor["P10 value"].values, df_tor["P50 at low"].values,  np.full(len(df_tor), base_p50)])
-        high_custom = np.column_stack([df_tor["P90 value"].values, df_tor["P50 at high"].values, np.full(len(df_tor), base_p50)])
+        if not df_tor.empty:
+            # Sort by impact descending and fix y-category order so largest appears on top
+            df_tor = df_tor.sort_values("Impact", ascending=False).reset_index(drop=True)
 
-        fig_tornado = go.Figure()
-        fig_tornado.add_trace(go.Bar(
-            y=df_tor["Variable"], x=df_tor["Low %"], orientation='h', name='Low (P10 value)', marker_color="#d62728",
-            customdata=low_custom,
-            hovertemplate="ΔP50: %{x:.2f}%<br>P10 value: %{customdata[0]:,.6g}<br>P50 at low: %{customdata[1]:,.6g}<br>Base P50: %{customdata[2]:,.6g}<extra></extra>"
-        ))
-        fig_tornado.add_trace(go.Bar(
-            y=df_tor["Variable"], x=df_tor["High %"], orientation='h', name='High (P90 value)', marker_color=plot_color,
-            customdata=high_custom,
-            hovertemplate="ΔP50: %{x:.2f}%<br>P90 value: %{customdata[0]:,.6g}<br>P50 at high: %{customdata[1]:,.6g}<br>Base P50: %{customdata[2]:,.6g}<extra></extra>"
-        ))
+            # Build customdata for rich hover per trace
+            low_custom  = np.column_stack([df_tor["P10 value"].values, df_tor["P50 at low"].values,  np.full(len(df_tor), base_p50)])
+            high_custom = np.column_stack([df_tor["P90 value"].values, df_tor["P50 at high"].values, np.full(len(df_tor), base_p50)])
 
-        fig_tornado.update_layout(
-            barmode='overlay',
-            title="Tornado: % change in P50 of in-place when each input is set to its P10/P90",
-            xaxis_title="ΔP50 (%) relative to base",
-            yaxis_title="Input variable",
-            yaxis=dict(categoryorder='array', categoryarray=df_tor["Variable"][::-1].tolist())
-        )
-        fig_tornado.add_vline(x=0.0, line_color="#888", line_dash="dash")
-        st.plotly_chart(fig_tornado, use_container_width=True)
-        report_figs.append(fig_tornado)
+            fig_tornado = go.Figure()
+            fig_tornado.add_trace(go.Bar(
+                y=df_tor["Variable"], x=df_tor["Low %"], orientation='h', name='Low (P10 value)', marker_color="#d62728",
+                customdata=low_custom,
+                hovertemplate="ΔP50: %{x:.2f}%<br>P10 value: %{customdata[0]:,.6g}<br>P50 at low: %{customdata[1]:,.6g}<br>Base P50: %{customdata[2]:,.6g}<extra></extra>"
+            ))
+            fig_tornado.add_trace(go.Bar(
+                y=df_tor["Variable"], x=df_tor["High %"], orientation='h', name='High (P90 value)', marker_color=plot_color,
+                customdata=high_custom,
+                hovertemplate="ΔP50: %{x:.2f}%<br>P90 value: %{customdata[0]:,.6g}<br>P50 at high: %{customdata[1]:,.6g}<br>Base P50: %{customdata[2]:,.6g}<extra></extra>"
+            ))
+
+            fig_tornado.update_layout(
+                barmode='overlay',
+                title="Tornado: % change in P50 of in-place when each input is set to its P10/P90",
+                xaxis_title="ΔP50 (%) relative to base",
+                yaxis_title="Input variable",
+                yaxis=dict(categoryorder='array', categoryarray=df_tor["Variable"][::-1].tolist())
+            )
+            fig_tornado.add_vline(x=0.0, line_color="#888", line_dash="dash")
+            st.plotly_chart(fig_tornado, use_container_width=True)
+            report_figs.append(fig_tornado)
+        else:
+            st.info("Tornado chart skipped: no inputs caused a change in base P50.")
 
         # =========
         # Results table (all computed outputs) + CSV
@@ -1802,6 +2089,11 @@ This application performs Monte Carlo volumetric assessments for subsurface rese
 ### How It Works
 1. **Configure the study** in the sidebar: set iterations, random seed, fluid system, and unit conventions.
 2. **Select a GRV workflow** (area × thickness, uploaded area–depth curve, or a direct GRV distribution). Optionally apply a GRV scale factor to all modes.
+   - **Fluid contact uncertainty** can be layered on top of each GRV option:
+     * *Area × thickness*: either derive the hydrocarbon column from sampled top/contact depths or apply a fill-fraction multiplier to the A×h geometry. When column modelling is enabled, the standalone `h` distribution is hidden because thickness is derived on the fly.
+     * *Curve mode*: sample an OWC/GWC depth and integrate the uploaded area–depth curve only down to that contact.
+     * *Direct GRV*: apply an uncertainty factor (0–1) to scale the sampled GRV.
+   These switches can be combined with GRV scaling, rock/fluid property distributions, and recovery/secondary products.
 3. **Describe subsurface properties** by picking distributions for NTG, porosity, water saturation, and fluid formation volume factors. Add recovery factor or multi-phase add-ons (solution gas `Rs`, condensate yield `CGR`) as needed.
 4. **Optionally define dependencies** between inputs. A Gaussian copula embeds your declared correlations into the sampling space.
 5. **Run the Monte Carlo**. Latin Hypercube Sampling (LHS) generates stratified draws across the high-dimensional joint distribution, preserving the correlation structure from the copula.
@@ -1956,7 +2248,7 @@ Each expander in the Simulator tab previews the probability density (or PMF) so 
 
 ---
 ### Version & Support
-- **App version:** {1.2.0}
-- **Questions or feedback?** Use the sidebar email link to reach the maintainers.
+- **App version:** {2.0.0}
+- **Questions or feedback?** Use the sidebar email link or raise an issue in GitHub. Thank you for your feedback!
         """
     )
