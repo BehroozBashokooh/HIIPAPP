@@ -596,9 +596,9 @@ with st.sidebar:
 
     st.header("Output scale & formatting")
     if fluid == "Oil":
-        out_unit = st.selectbox("In-place & reserves unit", list(OIL_UNITS.keys()), index=5, key="out_unit")  # default MMstb
+        out_unit = st.selectbox("In-place & recoverables unit", list(OIL_UNITS.keys()), index=5, key="out_unit")  # default MMstb
     else:
-        out_unit = st.selectbox("In-place & recoverable unit", list(GAS_UNITS.keys()), index=4, key="out_unit")  # default MMscf
+        out_unit = st.selectbox("In-place & recoverables unit", list(GAS_UNITS.keys()), index=4, key="out_unit")  # default MMscf
     decimals = st.number_input("Round results to # decimals", min_value=0, max_value=6, value=2, step=1, key="decimals")
     heatmap_decimals = st.number_input("Heatmap label decimals", min_value=0, max_value=6, value=1, step=1, key="heatmap_decimals")
 
@@ -642,7 +642,7 @@ with sim_tab:
         volumetric_formula = """
         <div class="volumetric-formula">
             <p><span class="label">STOIIP</span> = (GRV × NTG × &phi; × (1 − S<sub>w</sub>)) ÷ B<sub>o</sub></p>
-            <p><span class="optional">* Reserves</span> = STOIIP × RF,&nbsp; <span class="optional">* SGIIP</span> = STOIIP<sub>STB</sub> × R<sub>s</sub></p>
+            <p><span class="optional">* Recoverables</span> = STOIIP × RF,&nbsp; <span class="optional">* SGIIP</span> = STOIIP<sub>STB</sub> × R<sub>s</sub></p>
         </div>
         """
     else:
@@ -1609,12 +1609,12 @@ with sim_tab:
                 charts.append((f"STOIIP ({out_unit})", out["STOIIP_m3"] * (OIL_UNITS[out_unit]/OIL_UNITS["m³"]), int(decimals)))
             else:
                 charts.append((f"STOIIP ({out_unit})", out["STOIIP_stb"] * (OIL_UNITS[out_unit]/OIL_UNITS["stb"]), int(decimals)))
-            # Reserves
+            # Recoverables
             if include_rf and ("Reserves_m3" in out.columns or "Reserves_stb" in out.columns):
                 if out_unit in {"m³","Mm³","MMm³"} and "Reserves_m3" in out.columns:
-                    charts.append((f"Reserves ({out_unit})", out["Reserves_m3"] * (OIL_UNITS[out_unit]/OIL_UNITS["m³"]), int(decimals)))
+                    charts.append((f"Recoverables ({out_unit})", out["Reserves_m3"] * (OIL_UNITS[out_unit]/OIL_UNITS["m³"]), int(decimals)))
                 elif "Reserves_stb" in out.columns:
-                    charts.append((f"Reserves ({out_unit})", out["Reserves_stb"] * (OIL_UNITS[out_unit]/OIL_UNITS["stb"]), int(decimals)))
+                    charts.append((f"Recoverables ({out_unit})", out["Reserves_stb"] * (OIL_UNITS[out_unit]/OIL_UNITS["stb"]), int(decimals)))
             # Solution gas (if Rs)
             if "SGIIP_scf" in out.columns and st.session_state.get("include_rs", False):
                 sg_unit_local = st.session_state.get("sg_unit", "MMscf")
@@ -2015,11 +2015,11 @@ with sim_tab:
             if out_unit in {"m³","Mm³","MMm³"}:
                 results_cols[f"STOIIP ({out_unit})"] = scale_series(out["STOIIP_m3"], "Oil")
                 if include_rf and "Reserves_m3" in out.columns:
-                    results_cols[f"Reserves ({out_unit})"] = scale_series(out["Reserves_m3"], "Oil")
+                    results_cols[f"Recoverables ({out_unit})"] = scale_series(out["Reserves_m3"], "Oil")
             else:
                 results_cols[f"STOIIP ({out_unit})"] = scale_series(out["STOIIP_stb"], "Oil")
                 if include_rf and "Reserves_stb" in out.columns:
-                    results_cols[f"Reserves ({out_unit})"] = scale_series(out["Reserves_stb"], "Oil")
+                    results_cols[f"Recoverables ({out_unit})"] = scale_series(out["Reserves_stb"], "Oil")
             # Solution gas (unit-converted, remove raw)
             if "SGIIP_scf" in out.columns and st.session_state.get("include_rs", False):
                 sg_unit_local = st.session_state.get("sg_unit", "MMscf")
@@ -2102,7 +2102,7 @@ This application performs Monte Carlo volumetric assessments for subsurface rese
 ---
 ### What You Can Do
 - Test scenarios by mixing and matching GRV sources with or without scale multipliers.
-- Quantify uncertainty across STOIIP / GIIP, reserves, solution gas, or condensate volumes.
+- Quantify uncertainty across STOIIP / GIIP, recoverables, solution gas, or condensate volumes.
 - Explore which inputs move the P50 most via the tornado chart.
 - Share findings through ready-to-download CSV samples and a self-contained HTML report.
 
@@ -2231,7 +2231,7 @@ Each expander in the Simulator tab previews the probability density (or PMF) so 
 - **Histograms & CDFs** show the distribution of the active output with P10/P50/P90 markers (exceedance convention: P90 is low, P10 is high).
 - **Spearman heat map** focuses on how each input ranks against the target output. When dependencies are disabled, it simplifies to an input-vs-output column; when enabled, the full matrix is displayed.
 - **Tornado chart** reports the percentage change in P50 when each input is set to its P10 or P90 value (other variables remain sampled). Geometry inputs collapse into a single GRV bar when the scale factor is enabled to avoid double counting.
-- **Results table** summarizes P10/P50/P90 and mean for every computed output (STOIIP/GIIP, reserves/recoverable, solution gas, condensate) using the units selected in the sidebar.
+- **Results table** summarizes P10/P50/P90 and mean for every computed output (STOIIP/GIIP, recoverables, solution gas, condensate) using the units selected in the sidebar.
 
 ---
 ### Downloads & Reporting
